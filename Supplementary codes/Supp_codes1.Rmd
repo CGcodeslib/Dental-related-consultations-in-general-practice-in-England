@@ -1,0 +1,5152 @@
+---
+title: "Supplement codes 1: Dental-related consultations in general practice in England: a population-based retrospective study of national trends and inequalities"
+author: "CG"
+output: html_document
+---
+
+# restart the working environment 
+```{r}
+rm(list = ls())
+```
+
+
+# library
+```{r setup, include=FALSE}
+library(readxl)
+library(writexl)
+library(tidyverse)
+library(tidyr)
+library(popEpi)
+library(epitools)
+
+#install.packages(c("sf","ggplot2","dplyr","viridis", "rgeos", "rgdal", "maptool"))
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(viridis)
+library(epiR)
+library(PHEindicatormethods)
+library(broom)
+library(dplyr)
+library(purrr)
+library(tidyverse)
+library(lubridate)
+library(MASS)
+library(sandwich)
+library(lmtest)
+library(segmented)
+# install.packages("forecast")
+library(forecast)
+library(MASS)     # glm.nb
+library(splines)  # ns()
+
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(grid)   # for arrow()
+#library(rgeos)
+#library(rgdal)
+#library(maptools)
+library(forcats)
+library(cowplot)
+
+
+# frequent used path
+tables_figures <- "Analysis_results_CG/tables_figures"
+processed_data <- "Analysis_results_CG/processed_data"
+raw_data <- "Analysis_results_CG/raw_data"
+final_curated_data <- "Analysis_results_CG/processed_data/final_curated_data"
+
+code_lists <- "code_list"
+
+
+# 2. define study period
+study_start <- as.Date("1998-01-01")
+
+study_end <- as.Date("2023-12-31")
+ 
+
+```
+
+
+# Section 2: overall ir
+## Step 1: create overall summary table (dcat and age will be bind later)
+```{r}
+# 1. load the ir overall function 
+source("IR_summary_table_v3.R")
+# 2. calculate overall IR without any grouping 
+ir_summary_overall <- make_ir_table(
+  data  = sample_final,
+  py    = "py_ind_total",
+  cases = "dental_visit_count"
+)
+
+# 3. calcualte overall IR for each groups 
+group_vars <- c("region", "gender","final_ethnicity2", "final_ethnicity_groups2","imd_quintile")
+
+ir_summary_vars <- dplyr::tibble()
+for (g in group_vars) {
+  tmp <- make_ir_table(
+    data  = sample_final,
+    py    = "py_ind_total",
+    cases = "dental_visit_count",
+    var   = g
+  )
+  ir_summary_vars <- dplyr::bind_rows(ir_summary_vars, tmp)  # accumulate here
+}
+
+
+
+```
+
+## Step 2: confidence interval for all ir (dcat and age will be bind later)
+```{r}
+
+ir_summary_table <- ir_summary_table %>%
+  rowwise() %>%
+  mutate(
+    # Run epi.conf() on each row and scale to 1000 person-years
+    tmp = list(epi.conf(cbind(total_cases, total_person_year),
+                        ctype = "inc.rate", method = "exact") * 1000),
+    lower95_1000  = tmp$lower,
+    upper95_1000  = tmp$upper
+  ) %>%
+  select(-tmp) %>%
+  ungroup()
+
+```
+# Section 3: annual incidence 
+
+## Step 1: overall annual incidence 
+```{r}
+#
+
+source("IR_summary_table_v3.R")
+# All visits per year (1998–2023)
+
+annual_cases <- dental_records_long_final %>%
+  filter(between(obsyear, 1998, 2023)) %>%
+  count(year = obsyear, name = "cases")
+
+
+# calculate py by year 
+annual_py <- annual_person_time(
+  data  = sample_final,
+  id    = patid,
+  start = fu_start_date,
+  end   = censor_date,
+  years = 1998:2023,
+  aggregate = TRUE
+)
+# Annual summary table
+
+annual_summary_table <- annual_py %>% left_join( annual_cases, by = "year")
+
+
+# calculate ir1000
+annual_summary_table$ir1000 <- (annual_summary_table$cases/annual_summary_table$total_person_years)*1000
+
+# plot overall figure 
+source("DEEP_lineplots_annual_ir_v1.R")
+
+lp_annual_overall  <-make_lineplot(
+  data    = annual_summary_table,
+  x       = factor(year),
+  y       = ir1000,
+  title   = "Annual incidence rate",
+  xlab    = "Calendar year",
+  ylab    = "Incidence rate per 1,000 PY",
+  outfile = paste0(tables_figures, "/objective 1/figure_1a_annual_ir_lineplot.pdf")
+)
+
+
+```
+
+
+## Step 2: annual IR by 1 subgroup
+
+### Step 2.1: gender 
+```{r}
+# 1. count the event number 
+annual_cases_gender <- annual_cases_subgroups(
+  events_df  = dental_records_long_final,
+  event_year = obsyear,
+  years      = 1998:2023,
+  group_vars = "gender"
+)
+
+# 2. count the annual py 
+annual_py_gender <- annual_py_subgroups(
+  sample_df = sample_final,
+  id        = patid,
+  start     = fu_start_date,
+  end       = censor_date,
+  years     = 1998:2023,
+  group_vars= "gender"
+)
+
+# 3. calculate IR
+annual_ir_gender <- annual_cases_gender %>%
+  left_join(annual_py_gender, by = c("gender","year"))
+
+annual_ir_gender$ir1000 <- annual_ir_gender$cases/annual_ir_gender$total_person_years*1000
+
+
+# 4. correct variable name for plot 
+annual_ir_gender <- annual_ir_gender %>%
+  mutate(gender = factor(gender, levels = rev(sort(unique(gender))))) %>%
+  rename(Gender = gender)%>%
+  rename(Sex = Gender)
+
+
+# 5. plot annual gender ir
+make_lineplot(
+  data    = annual_ir_gender,
+  x       = factor(year),
+  y       = ir1000,
+  color   = Sex,
+  title   = "Annual incidence rate by gender",
+  xlab    = "Calendar year",
+  ylab    = "Incidence rate per 1,000 PY",
+  outfile = paste0(tables_figures, "/objective 1/figure_1a_annual_ir_gender_lineplot.pdf")
+)
+
+```
+
+### Step 2.2: ethnicity
+```{r}
+# 1. count the event number 
+annual_cases_6eth <- annual_cases_subgroups(
+  events_df  = dental_records_long_final,
+  event_year = obsyear,
+  years      = 1998:2023,
+  group_vars = "final_ethnicity_groups"
+)
+
+# 2. count the annual py 
+annual_py_6eth <- annual_py_subgroups(
+  sample_df = sample_final,
+  id        = patid,
+  start     = fu_start_date,
+  end       = censor_date,
+  years     = 1998:2023,
+  group_vars= "final_ethnicity_groups"
+)
+
+# 3. calculate IR
+annual_ir_6eth <- annual_cases_6eth %>%
+  left_join(annual_py_6eth, by = c("final_ethnicity_groups","year"))
+
+annual_ir_6eth$ir1000 <- annual_ir_6eth$cases/annual_ir_6eth$total_person_years*1000
+
+
+# 4.correct plot name 
+annual_ir_6eth <- annual_ir_6eth %>%
+  mutate(final_ethnicity_groups = factor(final_ethnicity_groups, levels = rev(sort(unique(final_ethnicity_groups))))) %>%
+  rename(Ethnicity = final_ethnicity_groups)
+
+# 5. plot annual 6eth ir
+make_lineplot(
+  data    = annual_ir_6eth,
+  x       = factor(year),
+  y       = ir1000,
+  color   = Ethnicity,
+  title   = "Annual incidence rate by 6eth",
+  xlab    = "Calendar year",
+  ylab    = "Incidence rate per 1,000 PY",
+  outfile = paste0(tables_figures, "/objective 1/figure_1a_annual_ir_6eth_lineplot.pdf")
+)
+
+```
+
+
+### Step 2.3: region
+
+```{r}
+# 1. count the event number 
+annual_cases_region <- annual_cases_subgroups(
+  events_df  = dental_records_long_final,
+  event_year = obsyear,
+  years      = 1998:2023,
+  group_vars = "region"
+)
+
+# 2. count the annual py 
+annual_py_region <- annual_py_subgroups(
+  sample_df = sample_final,
+  id        = patid,
+  start     = fu_start_date,
+  end       = censor_date,
+  years     = 1998:2023,
+  group_vars= "region"
+)
+
+# 3. calculate IR
+annual_ir_region <- annual_cases_region %>%
+  left_join(annual_py_region, by = c("region","year"))
+
+annual_ir_region$ir1000 <- annual_ir_region$cases/annual_ir_region$total_person_years*1000
+
+# 4.correct plot name 
+annual_ir_region <- annual_ir_region %>%
+  mutate(region = factor(region, levels = rev(sort(unique(region))))) %>%
+  rename(Region = region)
+
+
+# 5. plot annual region ir
+lp_annual_ir_region <- make_lineplot(
+  data    = annual_ir_region,
+  x       = factor(year),
+  y       = ir1000,
+  color   = Region,
+  title   = "Annual incidence rate by region",
+  xlab    = "Calendar year",
+  ylab    = "Incidence rate per 1,000 PY",
+  outfile = paste0(tables_figures, "/objective 1/figure_1a_annual_ir_region_lineplot.pdf")
+)
+
+```
+
+### Step 2.4: imd
+```{r}
+# 1. count the event number 
+annual_cases_imd <- annual_cases_subgroups(
+  events_df  = dental_records_long_final,
+  event_year = obsyear,
+  years      = 1998:2023,
+  group_vars = "imd_quintile"
+)
+
+# 2. count the annual py 
+annual_py_imd <- annual_py_subgroups(
+  sample_df = sample_final,
+  id        = patid,
+  start     = fu_start_date,
+  end       = censor_date,
+  years     = 1998:2023,
+  group_vars= "imd_quintile"
+)
+
+# 3. calculate IR
+annual_ir_imd <- annual_cases_imd %>%
+  left_join(annual_py_imd, by = c("imd_quintile","year"))
+
+annual_ir_imd$ir1000 <- annual_ir_imd$cases/annual_ir_imd$total_person_years*1000
+
+
+# 4. correct variable name for plot 
+library(dplyr)
+
+annual_ir_imd <- annual_ir_imd %>%
+  mutate(
+    # Recode only 1 and 5, keep others as they are
+    imd_quintile = case_when(
+      imd_quintile == 1 ~ "1 (Least Deprived)",
+      imd_quintile == 5 ~ "5 (Most Deprived)",
+      TRUE              ~ as.character(imd_quintile)   # keep other values
+    ),
+    # Turn into factor with reverse alphabetical order
+    imd_quintile = factor(imd_quintile,
+                          levels = rev(sort(unique(imd_quintile))))
+  ) %>%
+  rename(IMD = imd_quintile)
+
+
+# 5. plot annual imd ir
+lp_annual_ir_imd <- make_lineplot(
+  data    = annual_ir_imd,
+  x       = factor(year),
+  y       = ir1000,
+  color   = IMD,
+  title   = "Annual incidence rate by imd",
+  xlab    = "Calendar year",
+  ylab    = "Incidence rate per 1,000 PY",
+  outfile = paste0(tables_figures, "/objective 1/figure_1a_annual_ir_imd_lineplot.pdf")
+)
+
+```
+
+### Step 2.5: age 
+```{r}
+
+# 1. count the event number 
+annual_cases_age <- annual_cases_subgroups(
+  events_df  = dental_records_long_final,
+  event_year = obsyear,
+  years      = 1998:2023,
+  group_vars = "age_band"
+)
+
+# 2. count the annual py 
+annual_py_age <- annual_py_by_age(
+  sample_df = sample_final,
+  id        = patid,
+  start     = fu_start_year,
+  end       = censor_year,
+  years     = 1998:2023,
+  yob       = yob
+)
+
+ 
+
+
+# 3. calculate IR
+annual_ir_age <- annual_cases_age %>%
+  left_join(annual_py_age, by = c("age_band","year"))
+
+annual_ir_age$ir1000 <- annual_ir_age$cases/annual_ir_age$total_person_years*1000
+
+# 4.correct plot name 
+annual_ir_age <- annual_ir_age %>%
+  mutate(`Age group` = factor(age_band, levels = c("Older adults (60+)", "Adults (18–59)", "Children (3–17)")))
+
+
+
+# 5. plot annual age ir
+make_lineplot(
+  data    = annual_ir_age,
+  x       = factor(year),
+  y       = ir1000,
+  color   = `Age group`,
+  title   = "Annual incidence rate by age",
+  xlab    = "Calendar year",
+  ylab    = "Incidence rate per 1,000 PY",
+  outfile = paste0(tables_figures, "/objective 1/figure_1a_annual_ir_age_lineplot.pdf")
+)
+
+# confidence interval
+annual_ir_age <- annual_ir_age %>%
+  rowwise() %>%
+  mutate(
+    # Run epi.conf() on each row and scale to 1000 person-years
+    tmp = list(epi.conf(cbind(cases, total_person_years),
+                        ctype = "inc.rate", method = "exact") * 1000),
+    lower95_1000  = tmp$lower,
+    upper95_1000  = tmp$upper
+  ) %>%
+  select(-tmp) %>%
+  ungroup()
+```
+## Step 4: 2x2 ir 
+### Step 4.1:  ethnicity xregion
+```{r}
+# 1. create summary table
+ir_eth_region <- make_ir_table_combo(
+  data  = sample_final,
+  py    = "py_ind_total",
+  cases = "dental_visit_count",
+  vars  = c("final_ethnicity_groups","region")
+)
+
+
+# 2.calculate IR
+
+ir_eth_region$ir1000 <- ir_eth_region$total_cases/ir_eth_region$total_person_year*1000
+
+
+# 3. correct variable name for plot 
+ir_eth_region <- ir_eth_region %>% 
+  mutate(Ethnicity = factor(final_ethnicity_groups, levels = rev(sort(unique(final_ethnicity_groups))))) %>% 
+  mutate(Region = factor(region, levels = rev(sort(unique(region)))))
+
+
+# 4. plot annual 6eth_rgn ir
+make_heatmap(
+  data    = ir_eth_region,
+  x       = Ethnicity,
+  y       = Region,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by ethnicity and region",
+  xlab        = "Ethnicity",
+  ylab        = "Region",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_eth_rgn.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+
+
+
+```
+
+
+### Step 4.4:  ethnicity ximd
+```{r}
+# 1. create summary table
+ir_eth_imd <- make_ir_table_combo(
+  data  = sample_final,
+  py    = "py_ind_total",
+  cases = "dental_visit_count",
+  vars  = c("final_ethnicity_groups","imd_quintile")
+)
+
+
+# 2.calculate IR
+
+ir_eth_imd$ir1000 <- ir_eth_imd$total_cases/ir_eth_imd$total_person_year*1000
+
+
+# 3. correct variable name for plot 
+ir_eth_imd <- ir_eth_imd %>% 
+  mutate(Ethnicity = factor(final_ethnicity_groups, levels = rev(sort(unique(final_ethnicity_groups))))) %>% mutate(
+    # Recode only 1 and 5, keep others as they are
+    IMD = case_when(
+      imd_quintile == 1 ~ "1 (Least Deprived)",
+      imd_quintile == 5 ~ "5 (Most Deprived)",
+      TRUE              ~ as.character(imd_quintile)   # keep other values
+    ),
+    # Turn into factor with reverse alphabetical order
+    imd_quintile = factor(imd_quintile,
+                          levels = rev(sort(unique(imd_quintile)))))
+
+# 4. plot annual 6eth_rgn ir
+make_heatmap(
+  data    = ir_eth_imd,
+  x       = Ethnicity,
+  y       = IMD,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by ethnicity and IMD",
+  xlab        = "Ethnicity",
+  ylab        = "IMD",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_eth_imd.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+
+
+
+```
+### Step 4.5: all combination
+```{r}
+#############################################
+## Remaining 2x2 IR heatmaps (NO age, NO dcat)
+## IMD x Sex; IMD x Region; Ethnicity x Sex; Region x Sex
+#############################################
+
+## 4.X: IMD x Sex
+ir_imd_sex <- make_ir_table_combo(
+  data  = sample_final,
+  py    = "py_ind_total",
+  cases = "dental_visit_count",
+  vars  = c("imd_quintile","gender")
+)
+
+ir_imd_sex$ir1000 <- ir_imd_sex$total_cases / ir_imd_sex$total_person_year * 1000
+
+ir_imd_sex <- ir_imd_sex %>%
+  mutate(
+    Sex = factor(gender, levels = rev(sort(unique(gender)))),
+    IMD = case_when(
+      imd_quintile == 1 ~ "1 (Least Deprived)",
+      imd_quintile == 5 ~ "5 (Most Deprived)",
+      TRUE              ~ as.character(imd_quintile)
+    ),
+    imd_quintile = factor(imd_quintile, levels = rev(sort(unique(imd_quintile))))
+  )
+
+make_heatmap(
+  data    = ir_imd_sex,
+  x       = IMD,
+  y       = Sex,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by sex and IMD",
+  xlab        = "IMD",
+  ylab        = "Sex",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_imd_sex.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+
+## 4.X: IMD x Region
+ir_imd_region <- make_ir_table_combo(
+  data  = sample_final,
+  py    = "py_ind_total",
+  cases = "dental_visit_count",
+  vars  = c("imd_quintile","region")
+)
+
+ir_imd_region$ir1000 <- ir_imd_region$total_cases / ir_imd_region$total_person_year * 1000
+
+ir_imd_region <- ir_imd_region %>%
+  mutate(
+    Region = factor(region, levels = rev(sort(unique(region)))),
+    IMD = case_when(
+      imd_quintile == 1 ~ "1 (Least Deprived)",
+      imd_quintile == 5 ~ "5 (Most Deprived)",
+      TRUE              ~ as.character(imd_quintile)
+    ),
+    imd_quintile = factor(imd_quintile, levels = rev(sort(unique(imd_quintile))))
+  )
+
+make_heatmap(
+  data    = ir_imd_region,
+  x       = IMD,
+  y       = Region,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by region and IMD",
+  xlab        = "IMD",
+  ylab        = "Region",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_imd_region.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+
+## 4.X: Ethnicity x Sex
+ir_eth_sex <- make_ir_table_combo(
+  data  = sample_final,
+  py    = "py_ind_total",
+  cases = "dental_visit_count",
+  vars  = c("final_ethnicity_groups","gender")
+)
+
+ir_eth_sex$ir1000 <- ir_eth_sex$total_cases / ir_eth_sex$total_person_year * 1000
+
+ir_eth_sex <- ir_eth_sex %>%
+  mutate(
+    Ethnicity = factor(final_ethnicity_groups,
+                       levels = rev(sort(unique(final_ethnicity_groups)))),
+    Sex = factor(gender, levels = rev(sort(unique(gender))))
+  )
+
+make_heatmap(
+  data    = ir_eth_sex,
+  x       = Ethnicity,
+  y       = Sex,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by ethnicity and sex",
+  xlab        = "Ethnicity",
+  ylab        = "Sex",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_eth_sex.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+
+## 4.X: Region x Sex
+ir_region_sex <- make_ir_table_combo(
+  data  = sample_final,
+  py    = "py_ind_total",
+  cases = "dental_visit_count",
+  vars  = c("region","gender")
+)
+
+ir_region_sex$ir1000 <- ir_region_sex$total_cases / ir_region_sex$total_person_year * 1000
+
+ir_region_sex <- ir_region_sex %>%
+  mutate(
+    Region = factor(region, levels = rev(sort(unique(region)))),
+    Sex = factor(gender, levels = rev(sort(unique(gender))))
+  )
+
+make_heatmap(
+  data    = ir_region_sex,
+  x       = Region,
+  y       = Sex,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by region and sex",
+  xlab        = "Region",
+  ylab        = "Sex",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_region_sex.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+```
+
+
+## Step 5: dental category IR
+### Step 5.2: overall dent cat py
+```{r}
+# 1. load the ir overall function 
+source("IR_summary_table_v3.R")
+
+
+# 2. calculate overall IR for each dent cat
+
+ir_summary_dcat <- list()  # initialize an empty list to store results
+
+for (i in dent_cat_list) {
+  ir_summary_dcat[[i]] <- make_ir_table(
+    data  = sample_final,
+    py    = "py_ind_total",
+    cases = paste0("dcount_",i)  # assuming your columns are like A_count, B_count, etc.
+  )
+}
+
+
+ir_summary_dcat <- bind_rows(ir_summary_dcat, .id = "level") %>%
+  relocate(variable, .before = 1) %>%     # optional: put it first
+  mutate(variable= "Dental problem category") %>%
+  relocate(variable, .before = 1)   # make it the first column
+```
+
+### Step 5.4: overall ir and ci 
+```{r}
+# 3. calculate ir and ci 
+
+ir_summary_dcat <- ir_summary_dcat %>%
+  rowwise() %>%
+  mutate(
+    # Run epi.conf() on each row and scale to 1000 person-years
+    tmp = list(epi.conf(cbind(total_cases, total_person_year),
+                        ctype = "inc.rate", method = "exact") * 1000),
+    ir1000   = (total_cases / total_person_year) * 1000,
+    lower95_1000  = tmp$lower,
+    upper95_1000  = tmp$upper
+  ) %>%
+  select(-tmp) %>%
+  ungroup()
+
+# 4. combine with ir summary table 
+
+ir_summary_table <- bind_rows(ir_summary_table, ir_summary_dcat
+                              )
+# 5. explort the ir_summary table
+write_xlsx(ir_summary_table, paste0(tables_figures, "/objective 1/ir_summary_table.xlsx"))
+
+```
+
+### Step 5.5: dcat x region
+
+```{r}
+# Create empty lists to store results
+ir_summary_dcat_region <- list()
+
+# Names to remove
+remove_items <- c("Onward referral",
+                           "Examination", 
+                           "Non-specific dental disease")
+
+# Filter the list
+dent_cat_list <- dent_cat_list[!sapply(dent_cat_list, function(x) x %in% remove_items)]
+
+# Loop through each dental category
+for (i in c(paste0("dcount_", dent_cat_list))) {
+
+  # ---- region-specific IR ----
+  ir_dcat_region <- make_ir_table(
+    data  = sample_final,
+    py    = "py_ind_total",
+    cases = i,
+    var   = "region"
+  )
+
+  # ---- Store results in lists ----
+  ir_summary_dcat_region[[i]] <- ir_dcat_region
+}
+
+# Combine results across categories
+ir_summary_dcat_region <- bind_rows(ir_summary_dcat_region, .id = "variable") %>%
+  relocate(variable, .before = 1) 
+
+  # Add IR per 1000 PY + exact Poisson CI for both tables
+ir_summary_dcat_region <- ir_summary_dcat_region %>%
+    rowwise() %>%
+    mutate(
+      ir1000 = (total_cases / total_person_year) * 1000,
+      tmp = list(
+        epi.conf(cbind(total_cases, total_person_year),
+                 ctype = "inc.rate", method = "exact") * 1000
+      ),
+      lower95 = tmp$lower,
+      upper95 = tmp$upper
+    ) %>%
+    select(-tmp) %>%
+    ungroup() 
+
+
+####################
+# 3. correct variable name for plot 
+# 3) Clean the category label from "dcount_*" and make a factor (ordered) 
+ir_summary_dcat_region <- ir_summary_dcat_region %>% 
+  mutate( `Dental problem categories` = gsub("^dcount_", "", variable))%>%
+  mutate( `Dental problem categories` = factor( `Dental problem categories`, levels = rev(sort(unique(`Dental problem categories`))) ) )%>%
+  mutate(Region = factor(level, levels = rev(sort(unique(level)))))
+
+# 4. plot annual 6eth_rgn ir
+make_heatmap(
+  data    = ir_summary_dcat_region,
+  x       = Region,
+  y       =  `Dental problem categories`,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by region and dental problem categories",
+  xlab        = "Region",
+  ylab        = "Dental problem categories",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_dcat_region.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+```
+
+### Step 5.6: dcat x imd
+
+```{r}
+# Create empty lists to store results
+ir_summary_dcat_imd <- list()
+
+
+
+# Loop through each dental category
+for (i in c(paste0("dcount_", dent_cat_list))) {
+
+  # ---- imd-specific IR ----
+  ir_dcat_imd <- make_ir_table(
+    data  = sample_final,
+    py    = "py_ind_total",
+    cases = i,
+    var   = "imd_quintile"
+  )
+
+  # ---- Store results in lists ----
+  ir_summary_dcat_imd[[i]] <- ir_dcat_imd
+}
+
+# Combine results across categories
+ir_summary_dcat_imd <- bind_rows(ir_summary_dcat_imd, .id = "variable") %>%
+  relocate(variable, .before = 1) 
+
+  # Add IR per 1000 PY + exact Poisson CI for both tables
+ir_summary_dcat_imd <- ir_summary_dcat_imd %>%
+    rowwise() %>%
+    mutate(
+      ir1000 = (total_cases / total_person_year) * 1000,
+      tmp = list(
+        epi.conf(cbind(total_cases, total_person_year),
+                 ctype = "inc.rate", method = "exact") * 1000
+      ),
+      lower95 = tmp$lower,
+      upper95 = tmp$upper
+    ) %>%
+    select(-tmp) %>%
+    ungroup() 
+
+
+####################
+# 3. correct variable name for plot 
+# 3) Clean the category label from "dcount_*" and make a factor (ordered) 
+ir_summary_dcat_imd <- ir_summary_dcat_imd %>% 
+  mutate( `Dental problem categories` = gsub("^dcount_", "", variable))%>%
+  mutate( `Dental problem categories` = factor( `Dental problem categories`, levels = rev(sort(unique(`Dental problem categories`))) ) )%>%
+  mutate(imd = factor(level, levels = rev(sort(unique(level)))))
+
+# 4. plot annual 6eth_rgn ir
+make_heatmap(
+  data    = ir_summary_dcat_imd,
+  x       = imd,
+  y       =  `Dental problem categories`,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by IMD and dental problem categories",
+  xlab        = "IMD",
+  ylab        = "Dental problem categories",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_dcat_imd.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+```
+
+### Step 5.7: dcat x ethnicity
+
+```{r}
+# Create empty lists to store results
+ir_summary_dcat_ethnicity <- list()
+
+
+
+# Loop through each dental category
+for (i in c(paste0("dcount_", dent_cat_list))) {
+
+  # ---- ethnicity-specific IR ----
+  ir_dcat_ethnicity <- make_ir_table(
+    data  = sample_final,
+    py    = "py_ind_total",
+    cases = i,
+    var   = "final_ethnicity_groups"
+  )
+
+  # ---- Store results in lists ----
+  ir_summary_dcat_ethnicity[[i]] <- ir_dcat_ethnicity
+}
+
+# Combine results across categories
+ir_summary_dcat_ethnicity <- bind_rows(ir_summary_dcat_ethnicity, .id = "variable") %>%
+  relocate(variable, .before = 1) 
+
+  # Add IR per 1000 PY + exact Poisson CI for both tables
+ir_summary_dcat_ethnicity <- ir_summary_dcat_ethnicity %>%
+    rowwise() %>%
+    mutate(
+      ir1000 = (total_cases / total_person_year) * 1000,
+      tmp = list(
+        epi.conf(cbind(total_cases, total_person_year),
+                 ctype = "inc.rate", method = "exact") * 1000
+      ),
+      lower95 = tmp$lower,
+      upper95 = tmp$upper
+    ) %>%
+    select(-tmp) %>%
+    ungroup() 
+
+
+####################
+# 3. correct variable name for plot 
+# 3) Clean the category label from "dcount_*" and make a factor (ordered) 
+ir_summary_dcat_ethnicity <- ir_summary_dcat_ethnicity %>% 
+  mutate( `Dental problem categories` = gsub("^dcount_", "", variable))%>%
+  mutate( `Dental problem categories` = factor( `Dental problem categories`, levels = rev(sort(unique(`Dental problem categories`))) ) )%>%
+  mutate(Ethnicity = factor(level, levels = rev(sort(unique(level)))))
+
+
+# 4. plot annual 6eth_rgn ir
+make_heatmap(
+  data    = ir_summary_dcat_ethnicity,
+  x       = Ethnicity,
+  y       =  `Dental problem categories`,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by ethnicity and dental problem categories",
+  xlab        = "Ethnicity",
+  ylab        = "Dental problem categories",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_dcat_ethnicity.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+```
+
+### Step 5.7: dcat x sex
+```{r}
+# Create empty lists to store results
+ir_summary_dcat_sex <- list()
+
+
+
+# Loop through each dental category
+for (i in c(paste0("dcount_", dent_cat_list))) {
+
+  # ---- sex-specific IR ----
+  ir_dcat_sex <- make_ir_table(
+    data  = sample_final,
+    py    = "py_ind_total",
+    cases = i,
+    var   = "gender"
+  )
+
+  # ---- Store results in lists ----
+  ir_summary_dcat_sex[[i]] <- ir_dcat_sex
+}
+
+# Combine results across categories
+ir_summary_dcat_sex <- bind_rows(ir_summary_dcat_sex, .id = "variable") %>%
+  relocate(variable, .before = 1) 
+
+  # Add IR per 1000 PY + exact Poisson CI for both tables
+ir_summary_dcat_sex <- ir_summary_dcat_sex %>%
+    rowwise() %>%
+    mutate(
+      ir1000 = (total_cases / total_person_year) * 1000,
+      tmp = list(
+        epi.conf(cbind(total_cases, total_person_year),
+                 ctype = "inc.rate", method = "exact") * 1000
+      ),
+      lower95 = tmp$lower,
+      upper95 = tmp$upper
+    ) %>%
+    select(-tmp) %>%
+    ungroup() 
+
+
+####################
+# 3. correct variable name for plot 
+# 3) Clean the category label from "dcount_*" and make a factor (ordered) 
+ir_summary_dcat_sex <- ir_summary_dcat_sex %>% 
+  mutate( `Dental problem categories` = gsub("^dcount_", "", variable))%>%
+  mutate( `Dental problem categories` = factor( `Dental problem categories`, levels = rev(sort(unique(`Dental problem categories`))) ) )%>%
+  mutate(sex = factor(level, levels = rev(sort(unique(level)))))
+
+
+# 4. plot annual 6eth_rgn ir
+make_heatmap(
+  data    = ir_summary_dcat_sex,
+  x       = sex,
+  y       =  `Dental problem categories`,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by sex and dental problem categories",
+  xlab        = "Sex",
+  ylab        = "Dental problem categories",
+  
+  
+  
+  
+  
+  
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_dcat_sex.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+```
+
+### Step 5.4: annual dcat ir
+```{r}
+source("IR_summary_table_v3.R")
+
+
+# All visits per year (1998–2023)
+annual_cases_dcat <- annual_cases_subgroups(
+  events_df  = dental_records_long_final,
+  event_year = obsyear,
+  years      = 1998:2023,
+  group_vars = c("dental_category2")
+)
+
+# annual py stay the same as before so no need to calculate again.
+#annual_py <- annual_person_time(
+#  data  = sample_final,
+#  id    = patid,
+#  start = fu_start_date,
+#  end   = censor_date,
+#  years = 1998:2023,
+#  aggregate = TRUE
+#)
+# Annual summary table
+
+annual_summary_dcat <- annual_cases_dcat %>% left_join(annual_py, by = "year")
+
+
+# calculate ir1000
+annual_summary_dcat$ir1000 <- (annual_summary_dcat$cases/annual_summary_dcat$total_person_years)*1000
+
+
+# format dental category 
+annual_summary_dcat <- annual_summary_dcat %>% 
+  mutate(`Dental problem categories` = factor(`dental_category2`, levels = rev(sort(unique(`dental_category2`)))))
+# plot overall figure 
+source("DEEP_lineplots_annual_ir_v1.R")
+
+lp_annual_dcat <- make_lineplot(
+  data    = annual_summary_dcat,
+  x       = year,
+  y       = ir1000,
+  facet =   `Dental problem categories`,
+  title   = "Annual incidence rate",
+  xlab    = "Calendar year",
+  ylab    = "Incidence rate per 1,000 PY",
+  outfile = paste0(tables_figures, "/objective 1/figure_1a_dcat_annual_ir_lineplot.pdf")
+)
+```
+
+
+# Section 4: standardised rate to 2013 ESP and ESP age band ir
+## Step 1: by age
+### Step 1.1: create more detailed age band based on 2013 ESP
+```{r}
+
+# 1. define age group based on dob_age
+
+# library(epiR)   # for epi.conf()
+# library(writexl) # for write_xlsx()
+
+dental_records_long_final <- dental_records_long_final %>%
+  mutate(
+    age_band2 = case_when(
+      dob_age < 5   ~ "0-4",
+      dob_age >= 5  & dob_age < 10  ~ "5-9",
+      dob_age >= 10 & dob_age < 15  ~ "10-14",
+      dob_age >= 15 & dob_age < 20  ~ "15-19",
+      dob_age >= 20 & dob_age < 25  ~ "20-24",
+      dob_age >= 25 & dob_age < 30  ~ "25-29",
+      dob_age >= 30 & dob_age < 35  ~ "30-34",
+      dob_age >= 35 & dob_age < 40  ~ "35-39",
+      dob_age >= 40 & dob_age < 45  ~ "40-44",
+      dob_age >= 45 & dob_age < 50  ~ "45-49",
+      dob_age >= 50 & dob_age < 55  ~ "50-54",
+      dob_age >= 55 & dob_age < 60  ~ "55-59",
+      dob_age >= 60 & dob_age < 65  ~ "60-64",
+      dob_age >= 65 & dob_age < 70  ~ "65-69",
+      dob_age >= 70 & dob_age < 75  ~ "70-74",
+      dob_age >= 75 & dob_age < 80  ~ "75-79",
+      dob_age >= 80 & dob_age < 85  ~ "80-84",
+      dob_age >= 85 & dob_age < 90  ~ "85-89",
+      dob_age >= 90                 ~ "90+",
+      TRUE ~ NA_character_   # fallback for negatives/missing
+    ),
+    age_band2 = factor(
+      age_band2,
+      levels = c("0-4","5-9","10-14","15-19","20-24","25-29","30-34",
+                 "35-39","40-44","45-49","50-54","55-59","60-64","65-69",
+                 "70-74","75-79","80-84","85-89","90+")
+    )
+  )
+
+table(dental_records_long_final$age_band2, useNA = "ifany")
+
+# 2. create new data frame document number of cases
+age_band2_cases <- dental_records_long_final %>%
+  group_by(age_band2) %>%
+  summarise(
+    total_cases = n(),       # number of records in each age band
+    .groups = "drop"
+  ) %>%
+  arrange(age_band2)
+```
+
+
+
+### Step 1.2: get py for them
+
+```{r}
+# Add date cutpoints for each age boundary relative to DOB
+age_band2_py_cut <- sample_final %>%
+  mutate(
+    dob_0  = dob,
+    dob_5  = dob %m+% years(5),
+    dob_10 = dob %m+% years(10),
+    dob_15 = dob %m+% years(15),
+    dob_20 = dob %m+% years(20),
+    dob_25 = dob %m+% years(25),
+    dob_30 = dob %m+% years(30),
+    dob_35 = dob %m+% years(35),
+    dob_40 = dob %m+% years(40),
+    dob_45 = dob %m+% years(45),
+    dob_50 = dob %m+% years(50),
+    dob_55 = dob %m+% years(55),
+    dob_60 = dob %m+% years(60),
+    dob_65 = dob %m+% years(65),
+    dob_70 = dob %m+% years(70),
+    dob_75 = dob %m+% years(75),
+    dob_80 = dob %m+% years(80),
+    dob_85 = dob %m+% years(85),
+    dob_90 = dob %m+% years(90)
+  )
+
+# 2) Recompute band DAYS exactly (your logic), filling NAs with 0
+age_band2_py_cut <- age_band2_py_cut %>%
+  mutate(
+    py_0_4_days = case_when(
+      dob_5  <= fu_start_date ~ 0L,
+      dob_0  >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_5) - pmax(fu_start_date, dob_0))
+    ),
+    py_5_9_days = case_when(
+      dob_10 <= fu_start_date ~ 0L,
+      dob_5  >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_10) - pmax(fu_start_date, dob_5))
+    ),
+    py_10_14_days = case_when(
+      dob_15 <= fu_start_date ~ 0L,
+      dob_10 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_15) - pmax(fu_start_date, dob_10))
+    ),
+    py_15_19_days = case_when(
+      dob_20 <= fu_start_date ~ 0L,
+      dob_15 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_20) - pmax(fu_start_date, dob_15))
+    ),
+    py_20_24_days = case_when(
+      dob_25 <= fu_start_date ~ 0L,
+      dob_20 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_25) - pmax(fu_start_date, dob_20))
+    ),
+    py_25_29_days = case_when(
+      dob_30 <= fu_start_date ~ 0L,
+      dob_25 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_30) - pmax(fu_start_date, dob_25))
+    ),
+    py_30_34_days = case_when(
+      dob_35 <= fu_start_date ~ 0L,
+      dob_30 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_35) - pmax(fu_start_date, dob_30))
+    ),
+    py_35_39_days = case_when(
+      dob_40 <= fu_start_date ~ 0L,
+      dob_35 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_40) - pmax(fu_start_date, dob_35))
+    ),
+    py_40_44_days = case_when(
+      dob_45 <= fu_start_date ~ 0L,
+      dob_40 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_45) - pmax(fu_start_date, dob_40))
+    ),
+    py_45_49_days = case_when(
+      dob_50 <= fu_start_date ~ 0L,
+      dob_45 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_50) - pmax(fu_start_date, dob_45))
+    ),
+    py_50_54_days = case_when(
+      dob_55 <= fu_start_date ~ 0L,
+      dob_50 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_55) - pmax(fu_start_date, dob_50))
+    ),
+    py_55_59_days = case_when(
+      dob_60 <= fu_start_date ~ 0L,
+      dob_55 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_60) - pmax(fu_start_date, dob_55))
+    ),
+    py_60_64_days = case_when(
+      dob_65 <= fu_start_date ~ 0L,
+      dob_60 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_65) - pmax(fu_start_date, dob_60))
+    ),
+    py_65_69_days = case_when(
+      dob_70 <= fu_start_date ~ 0L,
+      dob_65 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_70) - pmax(fu_start_date, dob_65))
+    ),
+    py_70_74_days = case_when(
+      dob_75 <= fu_start_date ~ 0L,
+      dob_70 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_75) - pmax(fu_start_date, dob_70))
+    ),
+    py_75_79_days = case_when(
+      dob_80 <= fu_start_date ~ 0L,
+      dob_75 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_80) - pmax(fu_start_date, dob_75))
+    ),
+    py_80_84_days = case_when(
+      dob_85 <= fu_start_date ~ 0L,
+      dob_80 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_85) - pmax(fu_start_date, dob_80))
+    ),
+    py_85_89_days = case_when(
+      dob_90 <= fu_start_date ~ 0L,
+      dob_85 >= censor_date   ~ 0L,
+      TRUE ~ as.integer(pmin(censor_date, dob_90) - pmax(fu_start_date, dob_85))
+    ),
+    py_90_plus_days = case_when(
+      dob_90 >= censor_date ~ 0L,
+      TRUE ~ as.integer(censor_date - pmax(fu_start_date, dob_90))
+    ),
+
+    # Convert days to person-years
+    across(ends_with("_days"), ~ .x / 365.25, .names = "{.col}_py"),
+
+    # Check total PY consistency
+    py_sum_check = (
+      py_0_4_days_py + py_5_9_days_py + py_10_14_days_py + py_15_19_days_py +
+      py_20_24_days_py + py_25_29_days_py + py_30_34_days_py + py_35_39_days_py +
+      py_40_44_days_py + py_45_49_days_py + py_50_54_days_py + py_55_59_days_py +
+      py_60_64_days_py + py_65_69_days_py + py_70_74_days_py + py_75_79_days_py +
+      py_80_84_days_py + py_85_89_days_py + py_90_plus_days_py
+    ) - py_ind_total
+  )
+
+summary(age_band2_py_cut$py_sum_check)
+
+# 3. calculate overall py
+
+# Your age-band label order
+band_levels <- c("0-4","5-9","10-14","15-19","20-24","25-29","30-34",
+                 "35-39","40-44","45-49","50-54","55-59","60-64","65-69",
+                 "70-74","75-79","80-84","85-89","90+")
+
+# Sum per-band PY columns → long df with your band labels
+age_band2_py <- age_band2_py_cut %>%
+  dplyr::summarise(dplyr::across(stringr::str_subset(names(.), "^py_.*days_py$"),
+                                ~ sum(.x, na.rm = TRUE))) %>%
+  tidyr::pivot_longer(dplyr::everything(),
+                      names_to = "band_col",
+                      values_to = "total_person_year") %>%
+  dplyr::mutate(
+    age_band2 = band_col %>%
+      stringr::str_remove("^py_") %>%
+      stringr::str_remove("_days_py$") %>%
+      stringr::str_replace_all("_", "-") %>%
+      stringr::str_replace("-plus$", "+")
+  ) %>%
+  dplyr::select(age_band2, total_person_year) %>%
+  dplyr::mutate(age_band2 = factor(age_band2, levels = band_levels)) %>%
+  dplyr::arrange(age_band2)
+
+
+
+# 4. ir_age_band2
+ir_age_band2 <- age_band2_cases %>% left_join(age_band2_py, by = "age_band2")
+```
+### Step 1.3: general ir
+
+```{r}
+
+ir_age_band2 <- ir_age_band2 %>%
+  rowwise() %>%
+  mutate(
+    # Run epi.conf() on each row and scale to 1000 person-years
+    tmp = list(epi.conf(cbind(total_cases, total_person_year),
+                        ctype = "inc.rate", method = "exact") * 1000),
+    ir1000   = (total_cases / total_person_year) * 1000,
+    lower95_1000  = tmp$lower,
+    upper95_1000  = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup()
+
+# 4. combine with ir summary table
+ir_age_band2$variable <- "age_band2"
+
+
+ir_summary_table <- bind_rows(ir_summary_table, ir_age_band2)
+
+# 5. export the ir_summary table
+write_xlsx(ir_summary_table, paste0(tables_figures, "/objective 1/ir_summary_table.xlsx"))
+```
+
+### Step 1.4: direct standardised IR
+```{r}
+# 1. bind esp2013 weight
+ir_age_band2$esp2013 <- esp2013
+
+# 2. calculate age specific IR
+ir_age_band2$asir <- sum((ir_age_band2$ir1000/1000) * ir_age_band2$esp2013) / sum(ir_age_band2$esp2013)
+
+# 3. get ci
+asir <- calculate_dsr(
+  ir_age_band2,
+  total_cases,
+  total_person_year,
+  esp2013
+)
+
+
+
+```
+
+### Step 1.4: indirect standardised
+```{r}
+# 2. calculate age specific indirect incidence
+ir_age_band2$asi <- (ir_age_band2$ir1000/1000) * ir_age_band2$esp2013
+```
+
+### Step 1.5: non standardised age_band2 x dcat
+```{r}
+# 1. create summary table
+age2_dcat_cases <- dental_records_long_final %>%
+  group_by(age_band2, dental_category2) %>%
+  summarise(total_cases = n(), .groups = "drop") %>%
+  arrange(age_band2)
+
+# 2. combine with py
+ir_age2_dcat <- age2_dcat_cases %>%
+  left_join(age_band2_py, by = "age_band2")
+
+# 3. calculate IR
+ir_age2_dcat$ir1000 <- ir_age2_dcat$total_cases / ir_age2_dcat$total_person_year * 1000
+
+# 4. correct variable name for plot
+ir_age2_dcat <- ir_age2_dcat %>%
+  mutate(`Dental problem categories` = factor(dental_category2, levels = rev(sort(unique(dental_category2))))) %>%
+  mutate(`Age group` = factor(age_band2))
+
+# 5. plot annual 6eth_rgn ir
+hm_ir_age2_dcat <- make_heatmap(
+  data    = ir_age2_dcat,
+  x       = `Dental problem categories`,
+  y       = `Age group`,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by age group and dental problem categories",
+  xlab        = "Dental problem categories",
+  ylab        = "Age group",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_age2_dcat.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+```
+
+## Step 2: gender specific age standardised IR
+### Step 2.1: get cases for age band2 by gender
+```{r}
+age_band2_cases2 <- dental_records_long_final %>%
+  group_by(age_band2, gender) %>%
+  summarise(total_cases = n(), .groups = "drop") %>%
+  arrange(age_band2)
+```
+
+### Step 2.2: get py for age band2 by gender
+```{r}
+# 1) Named character vector: names are your bands, values are column names in the data
+py_days <- c(
+  "0-4"   = "py_0_4_days_py",
+  "5-9"   = "py_5_9_days_py",
+  "10-14" = "py_10_14_days_py",
+  "15-19" = "py_15_19_days_py",
+  "20-24" = "py_20_24_days_py",
+  "25-29" = "py_25_29_days_py",
+  "30-34" = "py_30_34_days_py",
+  "35-39" = "py_35_39_days_py",
+  "40-44" = "py_40_44_days_py",
+  "45-49" = "py_45_49_days_py",
+  "50-54" = "py_50_54_days_py",
+  "55-59" = "py_55_59_days_py",
+  "60-64" = "py_60_64_days_py",
+  "65-69" = "py_65_69_days_py",
+  "70-74" = "py_70_74_days_py",
+  "75-79" = "py_75_79_days_py",
+  "80-84" = "py_80_84_days_py",
+  "85-89" = "py_85_89_days_py",
+  "90+"   = "py_90_plus_days_py"
+)
+
+# 2) Loop one band at a time, pass the NAME of that PY column to make_ir_table()
+age_band2_gender_py <- vector("list", length(py_days))
+names(age_band2_gender_py) <- names(py_days)
+
+for (band in names(py_days)) {
+  colname <- py_days[[band]]
+
+  tmp <- make_ir_table(
+    data  = age_band2_py_cut,
+    py    = colname,                 # pass the NAME, not the vector
+    cases = "dental_visit_count",    # name as string
+    var   = "gender"                 # name as string
+  )
+
+  age_band2_gender_py[[band]] <- dplyr::mutate(tmp, age_band2 = band)
+}
+
+ir_ab2_gender <- dplyr::bind_rows(age_band2_gender_py)
+```
+
+### Step 2.3: combine cases and py get ir
+```{r}
+
+# 1. clean py data frame
+ir_ab2_gender <- ir_ab2_gender %>%
+  dplyr::select(-total_cases, -variable) %>%   # drop columns
+  dplyr::rename(gender = level)                # rename 'level' -> 'gender'
+
+# 2. combine with case counts
+ir_ab2_gender <- ir_ab2_gender %>%
+  left_join(age_band2_cases2, by = c("age_band2", "gender"))
+
+# 3. calculate ir per 1000
+ir_ab2_gender <- ir_ab2_gender %>%
+  rowwise() %>%
+  dplyr::mutate(
+    tmp = list(epi.conf(cbind(total_cases, total_person_year),
+                        ctype = "inc.rate", method = "exact") * 1000),
+    ir1000   = (total_cases / total_person_year) * 1000,
+    lower95_1000  = tmp$lower,
+    upper95_1000  = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup()
+
+# 4. combine esp2013
+ir_ab2_gender <- ir_ab2_gender %>%
+  left_join(ir_age_band2 %>% dplyr::select(age_band2, esp2013) ,
+            by = "age_band2")
+
+# 5. combined asir (split esp weight by 2 for gender)
+ir_ab2_gender$asir <- sum((ir_ab2_gender$ir1000/1000) * (ir_ab2_gender$esp2013/2)) / sum(ir_ab2_gender$esp2013/2)
+
+# 6 get ci
+ir_ab2_gender$esp2013_gender <- ir_ab2_gender$esp2013
+
+asir_gender <- calculate_dsr(
+  ir_ab2_gender,
+  total_cases,
+  total_person_year,
+  esp2013_gender
+)
+
+##########################################
+ir_ab2_male <- subset(ir_ab2_gender, gender == "Male")
+
+ir_ab2_male$asir <- sum((ir_ab2_male$ir1000/1000) * (ir_ab2_male$esp2013/2)) / sum(ir_ab2_male$esp2013/2)
+
+asir_male <- calculate_dsr(
+  ir_ab2_male,
+  total_cases,
+  total_person_year,
+  esp2013_gender
+)
+
+#########################
+ir_ab2_female <- subset(ir_ab2_gender, gender == "Female")
+
+ir_ab2_female$asir <- sum((ir_ab2_female$ir1000/1000) * (ir_ab2_female$esp2013/2)) / sum(ir_ab2_female$esp2013/2)
+
+asir_female <- calculate_dsr(
+  ir_ab2_female,
+  total_cases,
+  total_person_year,
+  esp2013_gender
+)
+
+
+```
+
+## Step 3: combine asir
+
+```{r}
+# 1. add row name
+asir$variable <- "Age standardised IR"
+asir_gender$variable <- "Age and gender standardised IR"
+asir_female$variable <- "Gender-specific age standardised (Female) IR"
+asir_male$variable <- "Gender-specific age standardised (Male) IR"
+
+# 2. combine
+asir_combined <- bind_rows(asir, asir_gender, asir_female, asir_male)
+```
+
+# Section 5: age 2x2 ir
+### Step 2.1: age2 x dcat
+```{r}
+# 1. create summary table
+age2_dcat_cases <- dental_records_long_final %>%
+  group_by(age_band2, dental_category2) %>%
+  summarise(total_cases = n(), .groups = "drop") %>%
+  arrange(age_band2)
+
+# 2. combine with py
+ir_age2_dcat <- age2_dcat_cases %>%
+  left_join(age_band2_py, by = "age_band2")
+
+# 3. calculate IR
+ir_age2_dcat$ir1000 <- ir_age2_dcat$total_cases / ir_age2_dcat$total_person_year * 1000
+
+# 4. correct variable name for plot
+ir_age2_dcat <- ir_age2_dcat %>%
+  mutate(`Dental problem categories` = factor(dental_category2, levels = rev(sort(unique(dental_category2))))) %>%
+  mutate(`Age group` = factor(age_band2))
+
+# 5. plot annual 6eth_rgn ir
+hm_ir_age2_dcat <- make_heatmap(
+  data    = ir_age2_dcat,
+  x       = `Dental problem categories`,
+  y       = `Age group`,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by age group and dental problem categories",
+  xlab        = "Dental problem categories",
+  ylab        = "Age group",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_age2_dcat.pdf"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+save(ir_age2_dcat, file = paste0(processed_data, "/final_curated_data/obj1_results/ir_age2_dcat.RData"))
+```
+
+
+### Step 2.2: age2 ximd 
+```{r}
+# 1. create summary table
+age_band2_imd_cases2 <- dental_records_long_final %>%
+  group_by(age_band2, imd_quintile) %>%
+  summarise(total_cases = n(), .groups = "drop") %>%
+  arrange(age_band2)
+
+# Loop one band at a time, pass the NAME of that PY column to make_ir_table()
+age_band2_imd_py <- vector("list", length(py_days))
+names(age_band2_imd_py) <- names(py_days)
+
+for (band in names(py_days)) {
+  colname <- py_days[[band]]
+
+  tmp <- make_ir_table(
+    data  = age_band2_py_cut,
+    py    = colname,                 # pass the NAME, not the vector
+    cases = "dental_visit_count",    # name as string
+    var   = "imd_quintile"                 # name as string
+  )
+
+  age_band2_imd_py[[band]] <- dplyr::mutate(tmp, age_band2 = band)
+}
+
+ir_ab2_imd <- dplyr::bind_rows(age_band2_imd_py)
+
+
+# 1. clean py data frame
+ir_ab2_imd <- ir_ab2_imd %>%
+  dplyr::select(-total_cases, -variable) %>%   # drop columns
+  dplyr::rename(imd_quintile = level)                # rename 'level' -> 'gender'
+
+# 2. combine with case counts
+ir_ab2_imd <- ir_ab2_imd %>%
+  left_join(age_band2_imd_cases2, by = c("age_band2", "imd_quintile"))
+
+# 3. correct variable name for plot 
+ir_ab2_imd <- ir_ab2_imd %>% mutate(
+    # Recode only 1 and 5, keep others as they are
+    IMD = case_when(
+      imd_quintile == 1 ~ "1 (Least Deprived)",
+      imd_quintile == 5 ~ "5 (Most Deprived)",
+      TRUE              ~ as.character(imd_quintile)   # keep other values
+    ),
+    # Turn into factor with reverse alphabetical order
+    IMD = factor(IMD,
+                          levels = c("1 (Least Deprived)", "2","3","4","5 (Most Deprived)","Unknown"))) %>%
+  mutate(age_band2 = factor(age_band2,
+                          levels = c("0-4","5-9","10-14","15-19","20-24","25-29","30-34",
+                 "35-39","40-44","45-49","50-54","55-59","60-64","65-69",
+                 "70-74","75-79","80-84","85-89","90+")))
+
+
+# 4. calculate ir1000
+ir_ab2_imd$ir1000 <- ir_ab2_imd$total_cases / ir_ab2_imd$total_person_year * 1000
+
+# 5. plot annual 6eth_rgn ir
+hm_ir_age2_imd <- make_heatmap(
+  data    = ir_ab2_imd %>% filter(IMD != "Unknown"),
+  x       = IMD,
+  y       = age_band2,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by age and IMD",
+  xlab        = "IMD",
+  ylab        = "Age Band",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_age2_imd.jpeg"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+save(ir_ab2_imd, file = paste0(processed_data, "/final_curated_data/obj1_results/ir_ab2_imd.RData"))
+```
+### Step 2.3: age2 xethnicity
+```{r}
+# 1. create summary table
+# 1. create summary table
+age_band2_eth_cases2 <- dental_records_long_final %>%
+  group_by(age_band2, final_ethnicity_groups) %>%
+  summarise(total_cases = n(), .groups = "drop") %>%
+  arrange(age_band2) %>%
+  dplyr::rename(ethnicity = final_ethnicity_groups)  
+
+# Loop one band at a time, pass the NAME of that PY column to make_ir_table()
+age_band2_eth_py <- vector("list", length(py_days))
+names(age_band2_eth_py) <- names(py_days)
+
+for (band in names(py_days)) {
+  colname <- py_days[[band]]
+
+  tmp <- make_ir_table(
+    data  = age_band2_py_cut,
+    py    = colname,                 # pass the NAME, not the vector
+    cases = "dental_visit_count",    # name as string
+    var   = "final_ethnicity_groups"                 # name as string
+  )
+
+  age_band2_eth_py[[band]] <- dplyr::mutate(tmp, age_band2 = band)
+}
+
+ir_ab2_eth <- dplyr::bind_rows(age_band2_eth_py)
+
+
+# 1. clean py data frame
+ir_ab2_eth <- ir_ab2_eth %>%
+  dplyr::select(-total_cases, -variable) %>%   # drop columns
+  dplyr::rename(ethnicity = level)                # rename 'level' -> 'gender'
+
+# 2. combine with case counts
+ir_ab2_eth <- ir_ab2_eth %>%
+  left_join(age_band2_eth_cases2, by = c("age_band2", "ethnicity"))
+
+# 3. correct variable name for plot 
+ir_ab2_eth <- ir_ab2_eth %>% mutate(
+    # Recode only 1 and 5, keep others as they are
+    ethnicity = case_when(
+      ethnicity == "Black, Black British, Caribbean or African" ~ "Black",
+      ethnicity == "Asian or Asian British" ~ "Asian",
+      ethnicity == "Other ethnic group" ~ "Other",
+      ethnicity =="Mixed or multiple ethnic groups" ~ "Mixed or Multiple",
+      TRUE              ~ as.character(ethnicity)   # keep other values
+    ),
+    # Turn into factor with reverse alphabetical order
+    ethnicity = factor(ethnicity,
+                          levels = c("White","Asian","Black", "Mixed or Multiple", "Other","Not specified"))) %>%
+  mutate(age_band2 = factor(age_band2,
+                          levels = c("0-4","5-9","10-14","15-19","20-24","25-29","30-34",
+                 "35-39","40-44","45-49","50-54","55-59","60-64","65-69",
+                 "70-74","75-79","80-84","85-89","90+")))
+
+
+# 4. calculate ir1000
+ir_ab2_eth$ir1000 <- ir_ab2_eth$total_cases / ir_ab2_eth$total_person_year * 1000
+
+# 5. plot annual 6eth_rgn ir
+hm_ir_age2_eth <- make_heatmap(
+  data    = ir_ab2_eth %>% filter(ethnicity != "Not specified"),
+  x       = ethnicity,
+  y       = age_band2,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by ethnicity and eth",
+  xlab        = "Ethnicity",
+  ylab        = "Age Band",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_age2_eth.jpeg"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+save(ir_ab2_eth, file = paste0(processed_data, "/final_curated_data/obj1_results/ir_ab2_eth.RData"))
+```
+
+### Step 2.4: age2 x region
+
+```{r}
+# 1. create summary table
+# 1. create summary table
+age_band2_rgn_cases2 <- dental_records_long_final %>%
+  group_by(age_band2, region) %>%
+  summarise(total_cases = n(), .groups = "drop") %>%
+  arrange(age_band2)
+
+# Loop one band at a time, pass the NAME of that PY column to make_ir_table()
+age_band2_rgn_py <- vector("list", length(py_days))
+names(age_band2_rgn_py) <- names(py_days)
+
+for (band in names(py_days)) {
+  colname <- py_days[[band]]
+
+  tmp <- make_ir_table(
+    data  = age_band2_py_cut,
+    py    = colname,                 # pass the NAME, not the vector
+    cases = "dental_visit_count",    # name as string
+    var   = "region"                 # name as string
+  )
+
+  age_band2_rgn_py[[band]] <- dplyr::mutate(tmp, age_band2 = band)
+}
+
+ir_ab2_rgn <- dplyr::bind_rows(age_band2_rgn_py)
+
+
+# 1. clean py data frame
+ir_ab2_rgn <- ir_ab2_rgn %>%
+  dplyr::select(-total_cases, -variable) %>%   # drop columns
+  dplyr::rename(region = level)                # rename 'level' -> 'gender'
+
+# 2. combine with case counts
+ir_ab2_rgn <- ir_ab2_rgn %>%
+  left_join(age_band2_rgn_cases2, by = c("age_band2", "region"))
+
+# 3. correct variable name for plot 
+ir_ab2_rgn <- ir_ab2_rgn %>%
+  mutate(age_band2 = factor(age_band2,
+                          levels = c("0-4","5-9","10-14","15-19","20-24","25-29","30-34",
+                 "35-39","40-44","45-49","50-54","55-59","60-64","65-69",
+                 "70-74","75-79","80-84","85-89","90+")))
+
+
+# 4. calculate ir1000
+ir_ab2_rgn$ir1000 <- ir_ab2_rgn$total_cases / ir_ab2_rgn$total_person_year * 1000
+
+# 5. plot annual 6rgn_rgn ir
+hm_ir_age2_rgn <- make_heatmap(
+  data    = ir_ab2_rgn,
+  x       = region,
+  y       = age_band2,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by region and age",
+  xlab        = "Region",
+  ylab        = "Age Band",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_age2_rgn.jpeg"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+save(ir_ab2_rgn, file = paste0(processed_data, "/final_curated_data/obj1_results/ir_ab2_rgn.RData"))
+```
+
+### Step 2.5: age2 x gender
+
+```{r}
+
+# 3. correct variable name for plot 
+ir_ab2_gender <- ir_ab2_gender %>%
+  mutate(age_band2 = factor(age_band2,
+                          levels = c("0-4","5-9","10-14","15-19","20-24","25-29","30-34",
+                 "35-39","40-44","45-49","50-54","55-59","60-64","65-69",
+                 "70-74","75-79","80-84","85-89","90+")))
+
+
+
+# 5. plot annual 6rgn_rgn ir
+hm_ir_age2_gender <- make_heatmap(
+  data    = ir_ab2_gender,
+  x       = gender,
+  y       = age_band2,
+  fill        = ir1000,
+  facet_nrow  = 1,
+  palette     = tailwind_cols,
+  legend_name = "IR per 1,000 PY",
+  title       = "Incidence heatmap by gender and age",
+  xlab        = "Gender",
+  ylab        = "Age Band",
+  outfile     = paste0(tables_figures, "/objective 1/fig3_ir_hm_age2_gender.jpeg"),
+  width       = 12,
+  height      = 6,
+  dpi         = 600
+)
+
+save(ir_ab2_gender, file = paste0(processed_data, "/final_curated_data/obj1_results/ir_ab2_gender.RData"))
+```
+
+
+# Section 6: model the before covid and after covid 
+
+## Step 1: check the distribution of dental count
+```{r}
+
+# 1. check the variable
+colnames(sample_final)
+
+# 2. distribution
+hist(sample_final$dental_visit_count)
+table(sample_final$dent_visit_count2)
+table(sample_final$had_dental_visit) # use logistic regression
+```
+
+
+## Step 2: define case or not in the new data frame
+Note: code ever dental visited but are control in that specific year as 2 = ever dvisited and remove from that year analysis 
+```{r}
+sample_final <- sample_final %>%
+  mutate(fu_start_year = lubridate::year(fu_start_date))
+
+sample_final <- sample_final %>%
+  mutate(censor_year = lubridate::year(censor_date))
+# 1. store a seperate data frame 
+lg_sample_final <- sample_final[,c("patid", "fu_start_date", "fu_start_year", "censor_date", "censor_year", "yob","had_dental_visit","gender","imd_quintile", "final_ethnicity_groups","region")]
+
+lg_sample_final$final_ethnicity_groups <- factor(
+  sample_final$final_ethnicity_groups,
+  levels = c(
+    "White",
+    "Asian or Asian British",
+    "Black, Black British, Caribbean or African",
+    "Mixed or multiple ethnic groups",
+    "Not specified",
+    "Other ethnic group"
+  )
+)
+
+
+# 2. create had dental visit variable for each year 
+
+years <- 1998:2023
+
+# create a matrix of 0/1 visit flags per year
+dvisit_mat <- sapply(
+  years,
+  function(y) {
+    as.integer(
+      lg_sample_final$patid %in% dental_records_long_final$patid[
+        dental_records_long_final$obsyear == y
+      ]
+    )
+  }
+)
+
+colnames(dvisit_mat) <- paste0("dvisit_", years)
+
+# bind the new columns to lg_sample_final
+lg_sample_final <- dplyr::bind_cols(
+  lg_sample_final,
+  as_tibble(dvisit_mat)
+)
+table(lg_sample_final$dvisit_2014 ==1, lg_sample_final$dvisit_2022 ==0)
+# 3. code every dental visited as 2
+years <- 1998:2023
+
+for (i in 2:length(years)) {
+  current_year <- years[i]              # e.g., 2023
+  previous_years <- years[1:(i-1)]      # e.g., 1998–2022
+  
+  current_var <- paste0("dvisit_", current_year)
+  previous_vars <- paste0("dvisit_", previous_years)
+  
+  # change current year to 2 if:
+  #   - current == 0
+  #   - ANY previous year == 1
+  lg_sample_final[[current_var]][
+    lg_sample_final[[current_var]] == 0 &
+    rowSums(lg_sample_final[previous_vars] == 1, na.rm = TRUE) > 0
+  ] <- 2
+}
+
+
+table(lg_sample_final$dvisit_2014 ==1, lg_sample_final$dvisit_2022 ==0)
+
+
+```
+
+
+## Step 3: define the sample for each year cohort
+
+```{r}
+
+
+# 1. loop to get the correct filter on cases from previous year
+lg_sample_final_year_list <- list()
+years <- 1998:2023
+
+lg_sample_final_year_list<- lapply(years, function(y) {
+  dvar <- paste0("dvisit_", y)
+  
+  # keep only rows where that year's dvisit is NOT 2
+  lg_sample_final[ is.na(lg_sample_final[[dvar]]) | lg_sample_final[[dvar]] != 2, ]
+})
+
+# Name list elements using the numeric years
+names(lg_sample_final_year_list) <- as.character(years)
+
+
+
+
+# 2. loop to filter on the follow up start time and end time 
+for (y in years) {
+  nm <- as.character(y)          # list element name
+  
+  df <- lg_sample_final_year_list[[nm]]
+  
+  df <- df %>%
+    filter(
+      fu_start_year <= y,
+      censor_year   >= y
+    )
+  
+  lg_sample_final_year_list[[nm]] <- df
+}
+
+
+```
+
+
+## Step 4: define age 
+```{r}
+source("CPRD_define_variable2_v1.R")
+# 1. define age and age band and age group
+for (y in years) {
+  nm <- as.character(y)
+  
+  df <- lg_sample_final_year_list[[nm]]
+  
+  # age in that specific year
+  df$age <- y - df$yob
+  
+  df$age_band <- age_band(df$age)
+  
+  lg_sample_final_year_list[[nm]] <- df
+}
+
+
+
+# 2. create adult and children list 
+lg_children_year_list <- lapply(lg_sample_final_year_list, function(df) {
+  df[df$age_band %in% c("0-4","5-9","10-14",  "15-19"), ]
+})
+
+lg_adult_year_list <- lapply(lg_sample_final_year_list, function(df) {
+  df[df$age_band %in% c("20-24" , "25-29" , "30-34",  "35-39",  "40-44",  "45-49",
+  "50-54",  "55-59"), ]
+})
+
+lg_older_adult_year_list <- lapply(lg_sample_final_year_list, function(df) {
+  df[df$age_band %in% c( "60-64",  "65-69",  "70-74",  "75-79",
+"80-84","85-89","90+"), ]
+})
+
+
+lapply(lg_children_year_list, function(df) {
+     c(
+       table(df$age_band)
+     )
+ }) #checked
+
+lapply(lg_adult_year_list, function(df) {
+     c(
+       table(df$age_band)
+     )
+ })
+
+lapply(lg_older_adult_year_list, function(df) {
+     c(
+       table(df$age_band)
+     )
+ })
+```
+
+
+## Step 4: models for adults and older adults
+```{r}
+# 1. empty list to store model objects
+lg_adult_models_list <- list()
+
+for (i in 1998:2023) {
+  
+  # correct outcome name dvisit_2019, dvisit_2020, ...
+  formula_i <- as.formula(
+    paste0("dvisit_", i,
+           " ~ gender + imd_quintile + age_band + final_ethnicity_groups + region")
+  )
+  
+  df_i <- lg_adult_year_list[[as.character(i)]]
+  
+  model_i <- glm(
+    formula = formula_i,
+    data    = df_i,
+    family  = binomial(link = "logit")
+  )
+  
+  lg_adult_models_list[[paste0("lg_adult_", i)]] <- model_i
+}
+
+# 1. empty list to store model objects
+lg_older_adult_models_list <- list()
+
+for (i in 1998:2023) {
+  
+  # correct outcome name dvisit_2019, dvisit_2020, ...
+  formula_i <- as.formula(
+    paste0("dvisit_", i,
+           " ~ gender + imd_quintile + age_band + final_ethnicity_groups + region")
+  )
+  
+  df_i <- lg_older_adult_year_list[[as.character(i)]]
+  
+  model_i <- glm(
+    formula = formula_i,
+    data    = df_i,
+    family  = binomial(link = "logit")
+  )
+  
+  lg_older_adult_models_list[[paste0("lg_older_adult_", i)]] <- model_i
+}
+
+
+```
+
+## Step 5: extract OR and CI
+```{r}
+# 1. older_adult resuls
+lg_older_adult_results <- purrr::map_dfr(
+  names(lg_older_adult_models_list),
+  function(model_name) {
+    
+    model <- lg_older_adult_models_list[[model_name]]
+    
+    broom::tidy(model) %>%
+      dplyr::mutate(
+        model  = model_name,
+        OR     = exp(estimate),
+        CI_low = exp(estimate - 1.96 * std.error),
+        CI_high= exp(estimate + 1.96 * std.error)
+      ) %>%
+      dplyr::select(model, term, estimate, OR, CI_low, CI_high, p.value)
+  }
+)
+
+
+# 2. list 2
+lg_adult_results <- purrr::map_dfr(
+  names(lg_adult_models_list),
+  function(model_name) {
+    
+    model <- lg_adult_models_list[[model_name]]
+    
+    broom::tidy(model) %>%
+      dplyr::mutate(
+        model  = model_name,
+        OR     = exp(estimate),
+        CI_low = exp(estimate - 1.96 * std.error),
+        CI_high= exp(estimate + 1.96 * std.error)
+      ) %>%
+      dplyr::select(model, term, estimate, OR, CI_low, CI_high, p.value)
+  }
+)
+
+# 2. list 2
+lg_children_results <- purrr::map_dfr(
+  names(lg_children_models_list),
+  function(model_name) {
+    
+    model <- lg_children_models_list[[model_name]]
+    
+    broom::tidy(model) %>%
+      dplyr::mutate(
+        model  = model_name,
+        OR     = exp(estimate),
+        CI_low = exp(estimate - 1.96 * std.error),
+        CI_high= exp(estimate + 1.96 * std.error)
+      ) %>%
+      dplyr::select(model, term, estimate, OR, CI_low, CI_high, p.value)
+  }
+)
+```
+
+## format the results 
+```{r}
+# 1. format 
+lg_adult_results_format <- lg_adult_results %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    Year = as.integer(sub("lg_adult_", "", model)),
+
+    Level = case_when(
+      grepl("^gender", term) ~
+        paste("Sex", sub("^gender", "", term)),
+
+      grepl("^imd_quintile", term) ~
+        paste("IMD", sub("^imd_quintile", "", term)),
+
+      grepl("^age_band", term) ~
+        paste("Age", sub("^age_band", "", term)),
+
+      grepl("^region", term) ~
+        paste("English region", sub("^region", "", term)),
+
+      grepl("^final_ethnicity_groups", term) ~
+        paste("Ethnicity", sub("^final_ethnicity_groups", "", term)),
+
+      TRUE ~ term
+    ),
+
+    Level = case_when(
+      Level == "Ethnicity Asian or Asian British" ~ "Ethnicity Asian",
+      Level == "Ethnicity Black, Black British, Caribbean or African" ~ "Ethnicity Black",
+      Level == "Ethnicity Mixed or multiple ethnic groups" ~ "Ethnicity Mixed",
+      Level == "Ethnicity Other ethnic group" ~ "Ethnicity Other",
+
+      Level == "IMD 1" ~ "IMD 1 (Least Deprived)",
+      Level == "IMD 5" ~ "IMD 5 (Most Deprived)",
+
+      TRUE ~ Level
+    ),
+        P = p.value,
+
+    `OR (95% CI)` = sprintf(
+      "%.2f (%.2f–%.2f)",
+      OR, CI_low, CI_high
+    )
+  ) %>%
+  dplyr::select(
+    Year,
+    Level,
+    `OR (95% CI)`,
+    P
+  )
+
+
+
+
+
+# 2. format 
+lg_older_adult_results_format <- lg_older_adult_results %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    Year = as.integer(sub("lg_older_adult_", "", model)),
+
+    Level = case_when(
+      grepl("^gender", term) ~
+        paste("Sex", sub("^gender", "", term)),
+
+      grepl("^imd_quintile", term) ~
+        paste("IMD", sub("^imd_quintile", "", term)),
+
+      grepl("^age_band", term) ~
+        paste("Age", sub("^age_band", "", term)),
+
+      grepl("^region", term) ~
+        paste("English region", sub("^region", "", term)),
+
+      grepl("^final_ethnicity_groups", term) ~
+        paste("Ethnicity", sub("^final_ethnicity_groups", "", term)),
+
+      TRUE ~ term
+    ),
+
+    Level = case_when(
+      Level == "Ethnicity Asian or Asian British" ~ "Ethnicity Asian",
+      Level == "Ethnicity Black, Black British, Caribbean or African" ~ "Ethnicity Black",
+      Level == "Ethnicity Mixed or multiple ethnic groups" ~ "Ethnicity Mixed",
+      Level == "Ethnicity Other ethnic group" ~ "Ethnicity Other",
+
+      Level == "IMD 1" ~ "IMD 1 (Least Deprived)",
+      Level == "IMD 5" ~ "IMD 5 (Most Deprived)",
+
+      TRUE ~ Level
+    ),
+
+    P = p.value,
+    `OR (95% CI)` = sprintf(
+      "%.2f (%.2f–%.2f)",
+      OR, CI_low, CI_high
+    )
+  ) %>%
+  dplyr::select(
+    Year,
+    Level,
+    `OR (95% CI)`,
+    P
+  )
+
+# adding crude OR and reference row
+
+
+```
+
+
+### events for each year and each level
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(writexl)
+
+
+#=========================================================
+# 1. Function to format logistic regression results
+#=========================================================
+
+format_lg_results <- function(results_data, model_prefix) {
+
+  results_data %>%
+    filter(term != "(Intercept)") %>%
+    mutate(
+      Year = as.integer(
+        sub(
+          paste0("^", model_prefix),
+          "",
+          model
+        )
+      ),
+
+      Level = case_when(
+        grepl("^gender", term) ~
+          paste("Sex", sub("^gender", "", term)),
+
+        grepl("^imd_quintile", term) ~
+          paste("IMD", sub("^imd_quintile", "", term)),
+
+        grepl("^age_band", term) ~
+          paste("Age", sub("^age_band", "", term)),
+
+        grepl("^region", term) ~
+          paste(
+            "English region",
+            sub("^region", "", term)
+          ),
+
+        grepl("^final_ethnicity_groups", term) ~
+          paste(
+            "Ethnicity",
+            sub("^final_ethnicity_groups", "", term)
+          ),
+
+        TRUE ~ term
+      ),
+
+      Level = case_when(
+        Level == "Ethnicity Asian or Asian British" ~
+          "Ethnicity Asian",
+
+        Level ==
+          "Ethnicity Black, Black British, Caribbean or African" ~
+          "Ethnicity Black",
+
+        Level ==
+          "Ethnicity Mixed or multiple ethnic groups" ~
+          "Ethnicity Mixed",
+
+        Level == "Ethnicity Other ethnic group" ~
+          "Ethnicity Other",
+
+        Level == "IMD 1" ~
+          "IMD 1 (Least Deprived)",
+
+        Level == "IMD 5" ~
+          "IMD 5 (Most Deprived)",
+
+        TRUE ~ Level
+      ),
+
+      P = p.value,
+
+      `OR (95% CI)` = sprintf(
+        "%.2f (%.2f–%.2f)",
+        OR,
+        CI_low,
+        CI_high
+      )
+    ) %>%
+    dplyr::select(
+      model,
+      Year,
+      Level,
+      `OR (95% CI)`,
+      P
+    )
+}
+
+
+#=========================================================
+# 2. Format the three logistic regression result tables
+#=========================================================
+
+lg_children_results_format <- format_lg_results(
+  results_data = lg_children_results,
+  model_prefix = "lg_children_"
+)
+
+lg_adult_results_format <- format_lg_results(
+  results_data = lg_adult_results,
+  model_prefix = "lg_adult_"
+)
+
+lg_older_adult_results_format <- format_lg_results(
+  results_data = lg_older_adult_results,
+  model_prefix = "lg_older_adult_"
+)
+
+
+#=========================================================
+# 3. Function to count events and non-events
+#    for every variable level in every list element
+#=========================================================
+
+lg_count_events_by_level <- function(
+  lg_data_list,
+  model_prefix
+) {
+
+  purrr::imap_dfr(
+    lg_data_list,
+    function(lg_data, list_name) {
+
+      # Extract year from the name of each list element
+      current_year <- as.integer(
+        stringr::str_extract(
+          as.character(list_name),
+          "\\d{4}"
+        )
+      )
+
+      # Create model name matching the regression results
+      current_model <- paste0(
+        model_prefix,
+        current_year
+      )
+
+      #---------------------------------------------------
+      # Sex counts
+      #---------------------------------------------------
+
+      sex_counts <- lg_data %>%
+        filter(
+          !is.na(gender),
+          as.character(had_dental_visit) %in% c("Yes", "No")
+        ) %>%
+        mutate(
+          Level = paste(
+            "Sex",
+            as.character(gender)
+          )
+        ) %>%
+        count(
+          Level,
+          had_dental_visit,
+          name = "N"
+        )
+
+      #---------------------------------------------------
+      # IMD counts
+      #---------------------------------------------------
+
+      imd_counts <- lg_data %>%
+        filter(
+          !is.na(imd_quintile),
+          as.character(had_dental_visit) %in% c("Yes", "No")
+        ) %>%
+        mutate(
+          Level = case_when(
+            as.character(imd_quintile) == "1" ~
+              "IMD 1 (Least Deprived)",
+
+            as.character(imd_quintile) == "5" ~
+              "IMD 5 (Most Deprived)",
+
+            TRUE ~ paste(
+              "IMD",
+              as.character(imd_quintile)
+            )
+          )
+        ) %>%
+        count(
+          Level,
+          had_dental_visit,
+          name = "N"
+        )
+
+      #---------------------------------------------------
+      # Age counts
+      #---------------------------------------------------
+
+      age_counts <- lg_data %>%
+        filter(
+          !is.na(age_band),
+          as.character(had_dental_visit) %in% c("Yes", "No")
+        ) %>%
+        mutate(
+          Level = paste(
+            "Age",
+            as.character(age_band)
+          )
+        ) %>%
+        count(
+          Level,
+          had_dental_visit,
+          name = "N"
+        )
+
+      #---------------------------------------------------
+      # Region counts
+      #---------------------------------------------------
+
+      region_counts <- lg_data %>%
+        filter(
+          !is.na(region),
+          as.character(had_dental_visit) %in% c("Yes", "No")
+        ) %>%
+        mutate(
+          Level = paste(
+            "English region",
+            as.character(region)
+          )
+        ) %>%
+        count(
+          Level,
+          had_dental_visit,
+          name = "N"
+        )
+
+      #---------------------------------------------------
+      # Ethnicity counts
+      #---------------------------------------------------
+
+      ethnicity_counts <- lg_data %>%
+        filter(
+          !is.na(final_ethnicity_groups),
+          as.character(had_dental_visit) %in% c("Yes", "No")
+        ) %>%
+        mutate(
+          Level = case_when(
+            as.character(final_ethnicity_groups) ==
+              "Asian or Asian British" ~
+              "Ethnicity Asian",
+
+            as.character(final_ethnicity_groups) ==
+              "Black, Black British, Caribbean or African" ~
+              "Ethnicity Black",
+
+            as.character(final_ethnicity_groups) ==
+              "Mixed or multiple ethnic groups" ~
+              "Ethnicity Mixed",
+
+            as.character(final_ethnicity_groups) ==
+              "Other ethnic group" ~
+              "Ethnicity Other",
+
+            TRUE ~ paste(
+              "Ethnicity",
+              as.character(final_ethnicity_groups)
+            )
+          )
+        ) %>%
+        count(
+          Level,
+          had_dental_visit,
+          name = "N"
+        )
+
+      #---------------------------------------------------
+      # Combine all variable-level counts
+      #---------------------------------------------------
+
+      bind_rows(
+        sex_counts,
+        imd_counts,
+        age_counts,
+        region_counts,
+        ethnicity_counts
+      ) %>%
+        mutate(
+          model = current_model,
+
+          Status = case_when(
+            as.character(had_dental_visit) == "Yes" ~
+              "Event N",
+
+            as.character(had_dental_visit) == "No" ~
+              "Non-event N",
+
+            TRUE ~ NA_character_
+          )
+        ) %>%
+        filter(!is.na(Status)) %>%
+        dplyr::select(
+          model,
+          Level,
+          Status,
+          N
+        ) %>%
+        complete(
+          model,
+          Level,
+          Status = c(
+            "Event N",
+            "Non-event N"
+          ),
+          fill = list(N = 0L)
+        ) %>%
+        pivot_wider(
+          names_from = Status,
+          values_from = N,
+          values_fill = 0
+        ) %>%
+        dplyr::select(
+          model,
+          Level,
+          `Event N`,
+          `Non-event N`
+        )
+    }
+  )
+}
+
+
+#=========================================================
+# 4. Count events and non-events for the three lists
+#=========================================================
+
+lg_children_event_counts <- lg_count_events_by_level(
+  lg_data_list = lg_children_year_list,
+  model_prefix = "lg_children_"
+)
+
+lg_adult_event_counts <- lg_count_events_by_level(
+  lg_data_list = lg_adult_year_list,
+  model_prefix = "lg_adult_"
+)
+
+lg_older_adult_event_counts <- lg_count_events_by_level(
+  lg_data_list = lg_older_adult_year_list,
+  model_prefix = "lg_older_adult_"
+)
+
+
+#=========================================================
+# 6. Function to join counts and format final tables
+#=========================================================
+
+add_level_event_counts <- function(
+  results_table,
+  event_counts
+) {
+
+  results_table %>%
+    left_join(
+      event_counts,
+      by = c(
+        "model",
+        "Level"
+      )
+    ) %>%
+    mutate(
+      `N events` = case_when(
+        is.na(`Event N`) ~ NA_character_,
+
+        TRUE ~ formatC(
+          `Event N`,
+          format = "f",
+          digits = 0,
+          big.mark = ","
+        )
+      ),
+
+      `N non-events` = case_when(
+        is.na(`Non-event N`) ~ NA_character_,
+
+        TRUE ~ formatC(
+          `Non-event N`,
+          format = "f",
+          digits = 0,
+          big.mark = ","
+        )
+      ),
+
+      `OR (95% CI)` = gsub(
+        "\\.",
+        "·",
+        `OR (95% CI)`
+      ),
+
+      P = case_when(
+        is.na(P)   ~ NA_character_,
+        P < 0.0001 ~ "<0.0001",
+        P < 0.001  ~ sprintf("%.5f", P),
+        P < 0.01   ~ sprintf("%.4f", P),
+        P < 0.1    ~ sprintf("%.3f", P),
+        TRUE       ~ sprintf("%.2f", P)
+      ),
+
+      P = gsub(
+        "\\.",
+        "·",
+        P
+      )
+    ) %>%
+    dplyr::select(
+      Year,
+      Level,
+      `N events`,
+      `N non-events`,
+      `OR (95% CI)`,
+      P
+    ) %>%
+    arrange(
+      Year,
+      Level
+    )
+}
+
+
+#=========================================================
+# 7. Create final formatted tables
+#=========================================================
+
+lg_children_results_format <- add_level_event_counts(
+  results_table = lg_children_results_format,
+  event_counts = lg_children_event_counts
+)
+
+lg_adult_results_format <- add_level_event_counts(
+  results_table = lg_adult_results_format,
+  event_counts = lg_adult_event_counts
+)
+
+lg_older_adult_results_format <- add_level_event_counts(
+  results_table = lg_older_adult_results_format,
+  event_counts = lg_older_adult_event_counts
+)
+
+
+
+```
+### Children: add ref rows
+```{r}
+##########################################
+# CHILDREN LOGISTIC REGRESSION TABLE
+# Add reference rows + crude OR + crude P
+##########################################
+
+# ============================================================
+# 1. Rename existing OR and P as adjusted results
+# ============================================================
+
+lg_children_results_format <- lg_children_results_format %>%
+  dplyr::rename(
+    `Adjusted OR (95% CI)` = `OR (95% CI)`,
+    `Adjusted P` = P
+  )
+
+
+# ============================================================
+# 2. Create Variable for EXISTING rows
+# ============================================================
+
+lg_children_results_format <- lg_children_results_format %>%
+  dplyr::mutate(
+    Variable = dplyr::case_when(
+      grepl("^Sex ", Level) ~ "Sex",
+      grepl("^IMD ", Level) ~ "IMD",
+      grepl("^Age ", Level) ~ "Age",
+      grepl("^English region ", Level) ~ "English region",
+      grepl("^Ethnicity ", Level) ~ "Ethnicity",
+      TRUE ~ NA_character_
+    )
+  )
+
+
+# ============================================================
+# 3. Convert existing N events / N non-events back to numeric
+#    e.g. "1,000" -> 1000
+# ============================================================
+
+lg_children_results_format <- lg_children_results_format %>%
+  dplyr::mutate(
+    `N events` = as.numeric(
+      gsub(",", "", `N events`)
+    ),
+    `N non-events` = as.numeric(
+      gsub(",", "", `N non-events`)
+    )
+  )
+
+
+# ============================================================
+# 4. Define reference levels
+# ============================================================
+
+reference_levels_children <- tibble::tribble(
+  ~variable,                 ~reference_level,   ~Level,                         ~Variable,
+  "gender",                  "Male",             "Sex Male",                     "Sex",
+  "imd_quintile",            "1",                "IMD 1 (Least Deprived)",       "IMD",
+  "age_band",                "0-4",              "Age 0-4",                      "Age",
+  "region",                  "East Midlands",    "English region East Midlands", "English region",
+  "final_ethnicity_groups",  "White",            "Ethnicity White",              "Ethnicity"
+)
+
+
+# ============================================================
+# 5. Extract reference-level Event N / Non-event N
+#    from each yearly dataset
+# ============================================================
+
+lg_children_reference_rows <- purrr::imap_dfr(
+  lg_children_year_list,
+  function(lg_data, lg_year_name) {
+
+    purrr::pmap_dfr(
+      reference_levels_children,
+      function(variable, reference_level, Level, Variable) {
+
+        lg_data %>%
+          dplyr::filter(
+            as.character(.data[[variable]]) == reference_level
+          ) %>%
+          dplyr::count(
+            had_dental_visit,
+            name = "N"
+          ) %>%
+          tidyr::complete(
+            had_dental_visit = c("Yes", "No"),
+            fill = list(N = 0L)
+          ) %>%
+          tidyr::pivot_wider(
+            names_from = had_dental_visit,
+            values_from = N,
+            values_fill = 0
+          ) %>%
+          dplyr::transmute(
+            Year = as.integer(lg_year_name),
+            Level = Level,
+            `N events` = as.numeric(Yes),
+            `N non-events` = as.numeric(No),
+            `Adjusted OR (95% CI)` = "Reference",
+            `Adjusted P` = NA_character_,
+            Variable = Variable
+          )
+      }
+    )
+  }
+)
+
+
+# ============================================================
+# 6. Bind reference rows back to existing formatted results
+# ============================================================
+
+lg_children_results_format <- dplyr::bind_rows(
+  lg_children_results_format,
+  lg_children_reference_rows
+)
+
+
+# ============================================================
+# 6. Calculate crude OR, 95% CI and crude P
+#    within each Year + Variable
+# ============================================================
+
+lg_children_results_format <- lg_children_results_format %>%
+  dplyr::group_by(
+    Year,
+    Variable
+  ) %>%
+  dplyr::mutate(
+
+    # reference counts
+    ref_event = `N events`[
+      `Adjusted OR (95% CI)` == "Reference"
+    ][1],
+
+    ref_non_event = `N non-events`[
+      `Adjusted OR (95% CI)` == "Reference"
+    ][1],
+
+    # crude OR
+    crude_OR =
+      (`N events` / `N non-events`) /
+      (ref_event / ref_non_event),
+
+    # SE of log OR
+    crude_SE = sqrt(
+      1 / `N events` +
+      1 / `N non-events` +
+      1 / ref_event +
+      1 / ref_non_event
+    ),
+
+    # 95% CI
+    crude_lower = exp(
+      log(crude_OR) - 1.96 * crude_SE
+    ),
+
+    crude_upper = exp(
+      log(crude_OR) + 1.96 * crude_SE
+    ),
+
+    # crude Wald P
+    crude_z =
+      log(crude_OR) / crude_SE,
+
+    crude_p_numeric =
+      2 * stats::pnorm(
+        -abs(crude_z)
+      )
+  ) %>%
+  dplyr::ungroup()
+
+
+# ============================================================
+# 7. Format crude OR
+# ============================================================
+
+lg_children_results_format <- lg_children_results_format %>%
+  dplyr::mutate(
+
+    `Crude OR (95% CI)` = dplyr::case_when(
+
+      `Adjusted OR (95% CI)` == "Reference" ~
+        "Reference",
+
+      TRUE ~ sprintf(
+        "%.2f (%.2f–%.2f)",
+        crude_OR,
+        crude_lower,
+        crude_upper
+      )
+    )
+  )
+
+
+# ============================================================
+# 8. Format crude P using EXACTLY your original P rule
+# ============================================================
+
+lg_children_results_format <- lg_children_results_format %>%
+  dplyr::mutate(
+
+    `Crude P` = dplyr::case_when(
+      `Adjusted OR (95% CI)` == "Reference" ~ NA_character_,
+      is.na(crude_p_numeric) ~ NA_character_,
+      crude_p_numeric < 0.0001 ~ "<0.0001",
+      crude_p_numeric < 0.001  ~ sprintf("%.5f", crude_p_numeric),
+      crude_p_numeric < 0.01   ~ sprintf("%.4f", crude_p_numeric),
+      crude_p_numeric < 0.1    ~ sprintf("%.3f", crude_p_numeric),
+      TRUE                     ~ sprintf("%.2f", crude_p_numeric)
+    )
+  ) %>%
+
+  # replace decimal point with middle dot
+  dplyr::mutate(
+    `Crude P` = gsub(
+      "\\.",
+      "·",
+      as.character(`Crude P`)
+    )
+  )
+
+
+# ============================================================
+# 9. Re-format N events / N non-events with commas
+#    only after crude calculations are finished
+# ============================================================
+
+lg_children_results_format <- lg_children_results_format %>%
+  dplyr::mutate(
+
+    `N events` = format(
+      `N events`,
+      big.mark = ",",
+      scientific = FALSE,
+      trim = TRUE
+    ),
+
+    `N non-events` = format(
+      `N non-events`,
+      big.mark = ",",
+      scientific = FALSE,
+      trim = TRUE
+    )
+  )
+
+
+# ============================================================
+# 10. Keep final columns
+# ============================================================
+
+lg_children_results_format <- lg_children_results_format %>%
+  dplyr::select(
+    Year,
+    Variable,
+    Level,
+    `N events`,
+    `N non-events`,
+    `Crude OR (95% CI)`,
+    `Crude P`,
+    `Adjusted OR (95% CI)`,
+    `Adjusted P`
+  )%>%
+  dplyr::arrange(Year, Level)
+```
+### adult: add ref row
+```{r}
+##########################################
+# ADULT LOGISTIC REGRESSION TABLE
+# Add reference rows + crude OR + crude P
+##########################################
+
+# ============================================================
+# 1. Rename existing OR and P as adjusted results
+# ============================================================
+
+lg_adult_results_format <- lg_adult_results_format %>%
+  dplyr::rename(
+    `Adjusted OR (95% CI)` = `OR (95% CI)`,
+    `Adjusted P` = P
+  )
+
+
+# ============================================================
+# 2. Create Variable for EXISTING rows
+# ============================================================
+
+lg_adult_results_format <- lg_adult_results_format %>%
+  dplyr::mutate(
+    Variable = dplyr::case_when(
+      grepl("^Sex ", Level) ~ "Sex",
+      grepl("^IMD ", Level) ~ "IMD",
+      grepl("^Age ", Level) ~ "Age",
+      grepl("^English region ", Level) ~ "English region",
+      grepl("^Ethnicity ", Level) ~ "Ethnicity",
+      TRUE ~ NA_character_
+    )
+  )
+
+
+# ============================================================
+# 3. Convert existing N events / N non-events back to numeric
+#    e.g. "1,000" -> 1000
+# ============================================================
+
+lg_adult_results_format <- lg_adult_results_format %>%
+  dplyr::mutate(
+    `N events` = as.numeric(
+      gsub(",", "", `N events`)
+    ),
+    `N non-events` = as.numeric(
+      gsub(",", "", `N non-events`)
+    )
+  )
+
+
+# ============================================================
+# 4. Define reference levels
+# ============================================================
+
+reference_levels_adult <- tibble::tribble(
+  ~variable,                ~reference_level, ~Level,                         ~Variable,
+  "gender",                 "Male",           "Sex Male",                     "Sex",
+  "imd_quintile",           "1",              "IMD 1 (Least Deprived)",       "IMD",
+  "age_band",               "20-24",          "Age 20-24",                    "Age",
+  "region",                 "East Midlands",  "English region East Midlands", "English region",
+  "final_ethnicity_groups",  "White",          "Ethnicity White",              "Ethnicity"
+)
+
+
+# ============================================================
+# 5. Extract reference-level Event N / Non-event N
+#    from each yearly dataset
+# ============================================================
+
+lg_adult_reference_rows <- purrr::imap_dfr(
+  lg_adult_year_list,
+  function(lg_data, lg_year_name) {
+
+    purrr::pmap_dfr(
+      reference_levels_adult,
+      function(variable, reference_level, Level, Variable) {
+
+        lg_data %>%
+          dplyr::filter(
+            as.character(.data[[variable]]) == reference_level
+          ) %>%
+          dplyr::count(
+            had_dental_visit,
+            name = "N"
+          ) %>%
+          tidyr::complete(
+            had_dental_visit = c("Yes", "No"),
+            fill = list(N = 0L)
+          ) %>%
+          tidyr::pivot_wider(
+            names_from = had_dental_visit,
+            values_from = N,
+            values_fill = 0
+          ) %>%
+          dplyr::transmute(
+            Year = as.integer(lg_year_name),
+            Level = Level,
+            `N events` = as.numeric(Yes),
+            `N non-events` = as.numeric(No),
+            `Adjusted OR (95% CI)` = "Reference",
+            `Adjusted P` = NA_character_,
+            Variable = Variable
+          )
+      }
+    )
+  }
+)
+
+
+# ============================================================
+# 6. Bind reference rows back to existing formatted results
+# ============================================================
+
+lg_adult_results_format <- dplyr::bind_rows(
+  lg_adult_results_format,
+  lg_adult_reference_rows
+)
+
+
+# ============================================================
+# 7. Calculate crude OR, 95% CI and crude P
+#    within each Year + Variable
+# ============================================================
+
+lg_adult_results_format <- lg_adult_results_format %>%
+  dplyr::group_by(
+    Year,
+    Variable
+  ) %>%
+  dplyr::mutate(
+
+    ref_event = `N events`[
+      `Adjusted OR (95% CI)` == "Reference"
+    ][1],
+
+    ref_non_event = `N non-events`[
+      `Adjusted OR (95% CI)` == "Reference"
+    ][1],
+
+    crude_OR =
+      (`N events` / `N non-events`) /
+      (ref_event / ref_non_event),
+
+    crude_SE = sqrt(
+      1 / `N events` +
+      1 / `N non-events` +
+      1 / ref_event +
+      1 / ref_non_event
+    ),
+
+    crude_lower = exp(
+      log(crude_OR) - 1.96 * crude_SE
+    ),
+
+    crude_upper = exp(
+      log(crude_OR) + 1.96 * crude_SE
+    ),
+
+    crude_z =
+      log(crude_OR) / crude_SE,
+
+    crude_p_numeric =
+      2 * stats::pnorm(
+        -abs(crude_z)
+      )
+  ) %>%
+  dplyr::ungroup()
+
+
+# ============================================================
+# 8. Format crude OR
+# ============================================================
+
+lg_adult_results_format <- lg_adult_results_format %>%
+  dplyr::mutate(
+
+    `Crude OR (95% CI)` = dplyr::case_when(
+
+      `Adjusted OR (95% CI)` == "Reference" ~
+        "Reference",
+
+      TRUE ~ sprintf(
+        "%.2f (%.2f–%.2f)",
+        crude_OR,
+        crude_lower,
+        crude_upper
+      )
+    )
+  )
+
+
+# ============================================================
+# 9. Format crude P using EXACTLY original P rule
+# ============================================================
+
+lg_adult_results_format <- lg_adult_results_format %>%
+  dplyr::mutate(
+
+    `Crude P` = dplyr::case_when(
+      `Adjusted OR (95% CI)` == "Reference" ~ NA_character_,
+      is.na(crude_p_numeric) ~ NA_character_,
+      crude_p_numeric < 0.0001 ~ "<0.0001",
+      crude_p_numeric < 0.001  ~ sprintf("%.5f", crude_p_numeric),
+      crude_p_numeric < 0.01   ~ sprintf("%.4f", crude_p_numeric),
+      crude_p_numeric < 0.1    ~ sprintf("%.3f", crude_p_numeric),
+      TRUE                     ~ sprintf("%.2f", crude_p_numeric)
+    )
+  ) %>%
+
+  dplyr::mutate(
+    `Crude P` = gsub(
+      "\\.",
+      "·",
+      as.character(`Crude P`)
+    )
+  )
+
+
+# ============================================================
+# 10. Re-format N events / N non-events with commas
+# ============================================================
+
+lg_adult_results_format <- lg_adult_results_format %>%
+  dplyr::mutate(
+
+    `N events` = format(
+      `N events`,
+      big.mark = ",",
+      scientific = FALSE,
+      trim = TRUE
+    ),
+
+    `N non-events` = format(
+      `N non-events`,
+      big.mark = ",",
+      scientific = FALSE,
+      trim = TRUE
+    )
+  )
+
+
+# ============================================================
+# 11. Keep final columns
+# ============================================================
+
+lg_adult_results_format <- lg_adult_results_format %>%
+  dplyr::select(
+    Year,
+    Variable,
+    Level,
+    `N events`,
+    `N non-events`,
+    `Crude OR (95% CI)`,
+    `Crude P`,
+    `Adjusted OR (95% CI)`,
+    `Adjusted P`
+  ) %>%
+  dplyr::arrange(Year, Level)
+```
+
+### older adult: add ref row
+```{r}
+# ============================================================
+# 1. Rename existing OR and P as adjusted results
+# ============================================================
+
+lg_older_adult_results_format <- lg_older_adult_results_format %>%
+  dplyr::rename(
+    `Adjusted OR (95% CI)` = `OR (95% CI)`,
+    `Adjusted P` = P
+  )
+
+
+# ============================================================
+# 2. Create Variable for EXISTING rows
+# ============================================================
+
+lg_older_adult_results_format <- lg_older_adult_results_format %>%
+  dplyr::mutate(
+    Variable = dplyr::case_when(
+      grepl("^Sex ", Level) ~ "Sex",
+      grepl("^IMD ", Level) ~ "IMD",
+      grepl("^Age ", Level) ~ "Age",
+      grepl("^English region ", Level) ~ "English region",
+      grepl("^Ethnicity ", Level) ~ "Ethnicity",
+      TRUE ~ NA_character_
+    )
+  )
+
+
+# ============================================================
+# 3. Convert existing N events / N non-events back to numeric
+# ============================================================
+
+lg_older_adult_results_format <- lg_older_adult_results_format %>%
+  dplyr::mutate(
+    `N events` = as.numeric(
+      gsub(",", "", `N events`)
+    ),
+    `N non-events` = as.numeric(
+      gsub(",", "", `N non-events`)
+    )
+  )
+
+
+# ============================================================
+# 4. Define reference levels
+# ============================================================
+
+reference_levels_older_adult <- tibble::tribble(
+  ~variable,                ~reference_level, ~Level,                         ~Variable,
+  "gender",                 "Male",           "Sex Male",                     "Sex",
+  "imd_quintile",           "1",              "IMD 1 (Least Deprived)",       "IMD",
+  "age_band",               "60-64",          "Age 60-64",                    "Age",
+  "region",                 "East Midlands",  "English region East Midlands", "English region",
+  "final_ethnicity_groups",  "White",          "Ethnicity White",              "Ethnicity"
+)
+
+
+# ============================================================
+# 5. Extract reference-level Event N / Non-event N
+# ============================================================
+
+lg_older_adult_reference_rows <- purrr::imap_dfr(
+  lg_older_adult_year_list,
+  function(lg_data, lg_year_name) {
+
+    purrr::pmap_dfr(
+      reference_levels_older_adult,
+      function(variable, reference_level, Level, Variable) {
+
+        lg_data %>%
+          dplyr::filter(
+            as.character(.data[[variable]]) == reference_level
+          ) %>%
+          dplyr::count(
+            had_dental_visit,
+            name = "N"
+          ) %>%
+          tidyr::complete(
+            had_dental_visit = c("Yes", "No"),
+            fill = list(N = 0L)
+          ) %>%
+          tidyr::pivot_wider(
+            names_from = had_dental_visit,
+            values_from = N,
+            values_fill = 0
+          ) %>%
+          dplyr::transmute(
+            Year = as.integer(lg_year_name),
+            Level = Level,
+            `N events` = as.numeric(Yes),
+            `N non-events` = as.numeric(No),
+            `Adjusted OR (95% CI)` = "Reference",
+            `Adjusted P` = NA_character_,
+            Variable = Variable
+          )
+      }
+    )
+  }
+)
+
+
+# ============================================================
+# 6. Bind reference rows back to existing formatted results
+# ============================================================
+
+lg_older_adult_results_format <- dplyr::bind_rows(
+  lg_older_adult_results_format,
+  lg_older_adult_reference_rows
+)
+
+
+# ============================================================
+# 7. Calculate crude OR, 95% CI and crude P
+# ============================================================
+
+lg_older_adult_results_format <- lg_older_adult_results_format %>%
+  dplyr::group_by(
+    Year,
+    Variable
+  ) %>%
+  dplyr::mutate(
+
+    ref_event = `N events`[
+      `Adjusted OR (95% CI)` == "Reference"
+    ][1],
+
+    ref_non_event = `N non-events`[
+      `Adjusted OR (95% CI)` == "Reference"
+    ][1],
+
+    crude_OR =
+      (`N events` / `N non-events`) /
+      (ref_event / ref_non_event),
+
+    crude_SE = sqrt(
+      1 / `N events` +
+      1 / `N non-events` +
+      1 / ref_event +
+      1 / ref_non_event
+    ),
+
+    crude_lower = exp(
+      log(crude_OR) - 1.96 * crude_SE
+    ),
+
+    crude_upper = exp(
+      log(crude_OR) + 1.96 * crude_SE
+    ),
+
+    crude_z =
+      log(crude_OR) / crude_SE,
+
+    crude_p_numeric =
+      2 * stats::pnorm(
+        -abs(crude_z)
+      )
+  ) %>%
+  dplyr::ungroup()
+
+
+# ============================================================
+# 8. Format crude OR
+# ============================================================
+
+lg_older_adult_results_format <- lg_older_adult_results_format %>%
+  dplyr::mutate(
+
+    `Crude OR (95% CI)` = dplyr::case_when(
+
+      `Adjusted OR (95% CI)` == "Reference" ~
+        "Reference",
+
+      TRUE ~ sprintf(
+        "%.2f (%.2f–%.2f)",
+        crude_OR,
+        crude_lower,
+        crude_upper
+      )
+    )
+  )
+
+
+# ============================================================
+# 9. Format crude P using EXACTLY original P rule
+# ============================================================
+
+lg_older_adult_results_format <- lg_older_adult_results_format %>%
+  dplyr::mutate(
+
+    `Crude P` = dplyr::case_when(
+      `Adjusted OR (95% CI)` == "Reference" ~ NA_character_,
+      is.na(crude_p_numeric) ~ NA_character_,
+      crude_p_numeric < 0.0001 ~ "<0.0001",
+      crude_p_numeric < 0.001  ~ sprintf("%.5f", crude_p_numeric),
+      crude_p_numeric < 0.01   ~ sprintf("%.4f", crude_p_numeric),
+      crude_p_numeric < 0.1    ~ sprintf("%.3f", crude_p_numeric),
+      TRUE                     ~ sprintf("%.2f", crude_p_numeric)
+    )
+  ) %>%
+
+  dplyr::mutate(
+    `Crude P` = gsub(
+      "\\.",
+      "·",
+      as.character(`Crude P`)
+    )
+  )
+
+
+# ============================================================
+# 10. Re-format N events / N non-events with commas
+# ============================================================
+
+lg_older_adult_results_format <- lg_older_adult_results_format %>%
+  dplyr::mutate(
+
+    `N events` = format(
+      `N events`,
+      big.mark = ",",
+      scientific = FALSE,
+      trim = TRUE
+    ),
+
+    `N non-events` = format(
+      `N non-events`,
+      big.mark = ",",
+      scientific = FALSE,
+      trim = TRUE
+    )
+  )
+
+
+# ============================================================
+# 11. Keep final columns
+# ============================================================
+
+lg_older_adult_results_format <- lg_older_adult_results_format %>%
+  dplyr::select(
+    Year,
+    Variable,
+    Level,
+    `N events`,
+    `N non-events`,
+    `Crude OR (95% CI)`,
+    `Crude P`,
+    `Adjusted OR (95% CI)`,
+    `Adjusted P`
+  ) %>%
+  dplyr::arrange(Year, Level)
+```
+### export
+
+```{r}
+#=========================================================
+# 9. Export final tables
+#=========================================================
+
+write_xlsx(
+  lg_children_results_format,
+  paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/Table S10.xlsx"
+  )
+)
+
+write_xlsx(
+  lg_adult_results_format,
+  paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/Table S11.xlsx"
+  )
+)
+
+write_xlsx(
+  lg_older_adult_results_format,
+  paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/Table S12.xlsx"
+  )
+)
+```
+
+## Step 6: forest plot code 
+```{r}
+forest_panel <- function(df, year, term_levels, model_prefix, show_y = FALSE) {
+
+  x_limits <- c(0.2, 6)
+  x_breaks <- c(0.2, 0.5, 1, 2, 4,6)
+
+  forest_col <- pink_to_red[30]
+
+  df_year <- df %>%
+    filter(model == paste0(model_prefix, year),
+           term != "(Intercept)") %>%
+    mutate(
+      term_label = factor(term_label, levels = term_levels),
+
+      ci_low_plot  = pmax(CI_low,  x_limits[1]),
+      ci_high_plot = pmin(CI_high, x_limits[2]),
+
+      arrow_left  = CI_low  < x_limits[1],
+      arrow_right = CI_high > x_limits[2]
+    )
+
+  df_right <- df_year %>% filter(arrow_right)
+  df_left  <- df_year %>% filter(arrow_left)
+
+  # ONLY rows with no arrows get caps
+  df_caps <- df_year %>% filter(!arrow_left & !arrow_right)
+
+  # cap size (vertical half-height around y)
+  cap_h <- 0.30  # increase/decrease to change cap size
+
+  ggplot(df_year, aes(x = OR, y = term_label)) +
+    geom_vline(xintercept = 1, linetype = 2, color = "gray50") +
+
+    # point
+    geom_point(size = 1.4, colour = forest_col) +
+
+    # CI line (no caps) for everyone
+    geom_segment(
+      aes(x = ci_low_plot, xend = ci_high_plot,
+          y = term_label,  yend = term_label),
+      linewidth = 0.30,
+      colour = forest_col
+    ) +
+
+    # ---- caps ONLY for non-arrow rows (manual vertical segments) ----
+    # left cap
+    geom_segment(
+      data = df_caps,
+      aes(x = ci_low_plot, xend = ci_low_plot,
+          y = as.numeric(term_label) - cap_h,
+          yend = as.numeric(term_label) + cap_h),
+      inherit.aes = FALSE,
+      linewidth = 0.30,
+      colour = forest_col
+    ) +
+    # right cap
+    geom_segment(
+      data = df_caps,
+      aes(x = ci_high_plot, xend = ci_high_plot,
+          y = as.numeric(term_label) - cap_h,
+          yend = as.numeric(term_label) + cap_h),
+      inherit.aes = FALSE,
+      linewidth = 0.30,
+      colour = forest_col
+    ) +
+
+    # right arrow (no cap)
+    geom_segment(
+      data = df_right,
+      aes(y = term_label, yend = term_label,
+          x = x_limits[2] / 1.3, xend = x_limits[2]),
+      inherit.aes = FALSE,
+      linewidth = 0.3,
+      colour = forest_col,
+      arrow = arrow(length = unit(0.1, "cm"),
+                    ends = "last", type = "closed")
+    ) +
+
+    # left arrow (no cap)
+    geom_segment(
+      data = df_left,
+      aes(y = term_label, yend = term_label,
+          x = x_limits[1], xend = x_limits[1] * 1),
+      inherit.aes = FALSE,
+      linewidth = 0.3,
+      colour = forest_col,
+      arrow = arrow(length = unit(0.1, "cm"),
+                    ends = "first", type = "closed")
+    ) +
+
+    scale_y_discrete(drop = FALSE) +
+    scale_x_log10(limits = x_limits, breaks = x_breaks) +
+
+    labs(x = NULL, y = NULL, title = paste0(year)) +
+
+    theme_classic(base_size = 11) +
+    theme(
+      plot.title = element_text(size = 10, hjust = 0.5, face = "bold"),
+      axis.text.x = element_text(size = 8),
+      axis.title.x = element_blank(),
+      axis.line.x  = element_line(),
+
+      axis.text.y  = if (show_y) element_text(size = 8) else element_blank(),
+      axis.ticks.y = if (show_y) element_line()        else element_blank(),
+      axis.line.y  = if (show_y) element_line()        else element_blank(),
+
+      # remove right-hand y artefacts
+      axis.text.y.right  = element_blank(),
+      axis.ticks.y.right = element_blank(),
+      axis.line.y.right  = element_blank(),
+
+      panel.border = element_blank()
+    )
+}
+
+```
+
+## forest plot during covid 
+covid and non covid plot creation use overlapped name should be run in sequence
+to recreate any plots need to rerun all codes from step 7 to step 12 in this section
+## Step 7: adult COVID forest (UPDATED)
+```{r}
+
+
+
+## ------------------------------------------------------------
+## Adult: Create forest plot using existing forest_panel()
+## ------------------------------------------------------------
+
+# 1. Years and model names
+adult_years  <- 2019:2023
+adult_models <- paste0("lg_adult_", adult_years)
+
+# 2. Clean term labels for adults (NO unknown IMD/ethnicity)
+adult_main <- lg_adult_results %>%
+  filter(model %in% adult_models) %>%
+  mutate(
+    term_label = case_when(
+      # Sex
+      term == "genderFemale" ~ "Female",
+
+      # IMD (removed Unknown)
+      term == "imd_quintile2" ~ "IMD 2",
+      term == "imd_quintile3" ~ "IMD 3",
+      term == "imd_quintile4" ~ "IMD 4",
+      term == "imd_quintile5" ~ "IMD 5",
+
+      # Adult age bands (non-reference levels)
+      term == "age_band25-29" ~ "Age 25–29",
+      term == "age_band30-34" ~ "Age 30–34",
+      term == "age_band35-39" ~ "Age 35–39",
+      term == "age_band40-44" ~ "Age 40–44",
+      term == "age_band45-49" ~ "Age 45–49",
+      term == "age_band50-54" ~ "Age 50–54",
+      term == "age_band55-59" ~ "Age 55–59",
+
+
+      # Ethnicity (removed Not specified)
+      term == "final_ethnicity_groupsAsian or Asian British"                     ~ "Asian",
+      term == "final_ethnicity_groupsBlack, Black British, Caribbean or African" ~ "Black",
+      term == "final_ethnicity_groupsMixed or multiple ethnic groups"            ~ "Mixed ethnicity",
+      term == "final_ethnicity_groupsOther ethnic group"                         ~ "Other ethnicity",
+
+      # Regions
+      term == "regionEast of England"          ~ "East of England",
+      term == "regionLondon"                   ~ "London",
+      term == "regionNorth East"               ~ "North East",
+      term == "regionNorth West"               ~ "North West",
+      term == "regionSouth East"               ~ "South East",
+      term == "regionSouth West"               ~ "South West",
+      term == "regionWest Midlands"            ~ "West Midlands",
+      term == "regionYorkshire and The Humber" ~ "Yorkshire and The Humber",
+
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(term_label))
+
+# 3. Reference rows for adults (Age 20–24 is the reference)
+adult_ref_rows <- expand.grid(
+  model = adult_models,
+  term_label = c(
+    "Male (ref)",
+    "Age 20–24 (ref)",
+    "White (ref)",
+    "IMD 1 (ref)",
+    "East Midlands (ref)"
+  ),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    term    = paste0("ref_", row_number()),
+    OR      = 1,
+    CI_low  = 1,
+    CI_high = 1
+  )
+
+# 4. Combine adult dataset
+lg_adult_plot <- bind_rows(adult_main, adult_ref_rows)
+
+# 5. Term ordering with spacers (removed unknown IMD/ethnicity)
+adult_terms <- c(
+  # Sex
+  "Male (ref)",
+  "Female",
+  " ",
+
+  # Age
+  "Age 20–24 (ref)",
+  "Age 25–29",
+  "Age 30–34",
+  "Age 35–39",
+  "Age 40–44",
+  "Age 45–49",
+  "Age 50–54",
+  "Age 55–59",
+
+  "  ",
+
+  # Ethnicity
+  "White (ref)",
+  "Asian",
+  "Black",
+  "Mixed ethnicity",
+  "Other ethnicity",
+  "   ",
+
+  # IMD
+  "IMD 1 (ref)",
+  "IMD 2",
+  "IMD 3",
+  "IMD 4",
+  "IMD 5",
+  "    ",
+
+  # Region
+  "East Midlands (ref)",
+  "East of England",
+  "London",
+  "North East",
+  "North West",
+  "South East",
+  "South West",
+  "West Midlands",
+  "Yorkshire and The Humber"
+)
+
+# 6. Build adult panels using your existing forest_panel() function
+adult_panels <- lapply(
+  seq_along(adult_years),
+  function(i)
+    forest_panel(
+      df           = lg_adult_plot,
+      year         = adult_years[i],
+      term_levels  = adult_terms,
+      model_prefix = "lg_adult_",
+      show_y       = (i == 1)
+    )
+)
+
+# 7. Combine panels + add Odds Ratio label
+p_adult_combined <- wrap_plots(adult_panels, nrow = 1)
+
+xlabel_adult <- ggplot() +
+  theme_void() +
+  labs(x = "Odds Ratio") +
+  theme(
+    axis.title.x = element_text(
+      size   = 9,
+      margin = margin(t = -5)
+    )
+  )
+
+p_adult_combined <- wrap_plots(
+  p_adult_combined,
+  xlabel_adult,
+  ncol = 1,
+  heights = c(14, 0.1)
+)
+
+# 8. Save plot
+ggsave(
+  filename = "P:/Precision Health Programme/JW Research/DEEP study/GP Dental/Analysis_results_CG/tables_figures/lancet scaled/formatted/forest_adult_COVID.pdf",
+  plot     = patchwork::patchworkGrob(p_adult_combined),
+  width    = 12,
+  height   = 6
+)
+
+```
+
+
+## Step 8: older adult COVID forest (UPDATED)
+```{r}
+
+## ------------------------------------------------------------
+## older_adult: Create forest plot using existing forest_panel()
+## ------------------------------------------------------------
+
+# 1. Years and model names
+older_adult_years  <- 2019:2023
+older_adult_models <- paste0("lg_older_adult_", older_adult_years)
+
+
+# 2. Clean term labels for older_adults
+#    NO unknown IMD / ethnicity
+older_adult_main <- lg_older_adult_results %>%
+  filter(model %in% older_adult_models) %>%
+  mutate(
+    term_label = case_when(
+
+      # Sex
+      term == "genderFemale" ~ "Female",
+
+      # IMD
+      term == "imd_quintile2" ~ "IMD 2",
+      term == "imd_quintile3" ~ "IMD 3",
+      term == "imd_quintile4" ~ "IMD 4",
+      term == "imd_quintile5" ~ "IMD 5",
+
+      # Age bands
+      term == "age_band65-69" ~ "Age 65–69",
+      term == "age_band70-74" ~ "Age 70–74",
+      term == "age_band75-79" ~ "Age 75–79",
+      term == "age_band80-84" ~ "Age 80–84",
+      term == "age_band85-89" ~ "Age 85–89",
+      term == "age_band90+"   ~ "Age 90+",
+
+      # Ethnicity
+      term == "final_ethnicity_groupsAsian or Asian British" ~
+        "Asian",
+
+      term == "final_ethnicity_groupsBlack, Black British, Caribbean or African" ~
+        "Black",
+
+      term == "final_ethnicity_groupsMixed or multiple ethnic groups" ~
+        "Mixed ethnicity",
+
+      term == "final_ethnicity_groupsOther ethnic group" ~
+        "Other ethnicity",
+
+      # Region
+      term == "regionEast of England" ~
+        "East of England",
+
+      term == "regionLondon" ~
+        "London",
+
+      term == "regionNorth East" ~
+        "North East",
+
+      term == "regionNorth West" ~
+        "North West",
+
+      term == "regionSouth East" ~
+        "South East",
+
+      term == "regionSouth West" ~
+        "South West",
+
+      term == "regionWest Midlands" ~
+        "West Midlands",
+
+      term == "regionYorkshire and The Humber" ~
+        "Yorkshire and The Humber",
+
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(term_label))
+
+
+# 3. Reference rows
+#    Age 60–64 is the age reference category
+older_adult_ref_rows <- expand.grid(
+  model = older_adult_models,
+  term_label = c(
+    "Male (ref)",
+    "Age 60–64 (ref)",
+    "White (ref)",
+    "IMD 1 (ref)",
+    "East Midlands (ref)"
+  ),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    term    = paste0("ref_", row_number()),
+    OR      = 1,
+    CI_low  = 1,
+    CI_high = 1
+  )
+
+
+# 4. Combine model estimates and reference rows
+lg_older_adult_plot <- bind_rows(
+  older_adult_main,
+  older_adult_ref_rows
+)
+
+
+# 5. Term ordering with spacers
+older_adult_terms <- c(
+
+  # Sex
+  "Male (ref)",
+  "Female",
+  " ",
+
+  # Age
+  "Age 60–64 (ref)",
+  "Age 65–69",
+  "Age 70–74",
+  "Age 75–79",
+  "Age 80–84",
+  "Age 85–89",
+  "Age 90+",
+  "  ",
+
+  # Ethnicity
+  "White (ref)",
+  "Asian",
+  "Black",
+  "Mixed ethnicity",
+  "Other ethnicity",
+  "   ",
+
+  # IMD
+  "IMD 1 (ref)",
+  "IMD 2",
+  "IMD 3",
+  "IMD 4",
+  "IMD 5",
+  "    ",
+
+  # Region
+  "East Midlands (ref)",
+  "East of England",
+  "London",
+  "North East",
+  "North West",
+  "South East",
+  "South West",
+  "West Midlands",
+  "Yorkshire and The Humber"
+)
+
+
+# 6. Build one forest panel for each year
+older_adult_panels <- lapply(
+  seq_along(older_adult_years),
+  function(i) {
+
+    forest_panel(
+      df           = lg_older_adult_plot,
+      year         = older_adult_years[i],
+      term_levels  = older_adult_terms,
+      model_prefix = "lg_older_adult_",
+      show_y       = (i == 1)
+    )
+
+  }
+)
+
+
+# 7. Combine panels
+p_older_adult_combined <- wrap_plots(
+  older_adult_panels,
+  nrow = 1
+)
+
+
+# Add common x-axis label
+xlabel_older_adult <- ggplot() +
+  theme_void() +
+  labs(x = "Odds Ratio") +
+  theme(
+    axis.title.x = element_text(
+      size   = 9,
+      margin = margin(t = -5)
+    )
+  )
+
+
+p_older_adult_combined <- wrap_plots(
+  p_older_adult_combined,
+  xlabel_older_adult,
+  ncol    = 1,
+  heights = c(14, 0.1)
+)
+
+
+# 8. Save plot
+ggsave(
+  filename = paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/",
+    "forest_older_adult_COVID.pdf"
+  ),
+  plot   = patchwork::patchworkGrob(p_older_adult_combined),
+  width  = 12,
+  height = 6
+)
+```
+## Step 9: patch forest plots
+```{r}
+library(ggplot2)
+library(patchwork)
+
+# 1) Wrap each "combined" forest so it behaves like ONE panel
+children_one <- wrap_elements(p_children_combined)
+adults_one   <- wrap_elements(p_adult_combined)
+older_adults_one   <- wrap_elements(p_older_adult_combined)
+
+# 2) Make label rows
+lab_A <- ggplot() +
+  annotate("text", x = 0, y = 0, label = "(A) Children",
+           hjust = 0, fontface = "bold", size = 5) +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(-1, 1), clip = "off")
+
+lab_B <- ggplot() +
+  annotate("text", x = 0, y = 0, label = "(B) Adults",
+           hjust = 0, fontface = "bold", size = 5) +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(-1, 1), clip = "off")
+
+lab_C <- ggplot() +
+  annotate("text", x = 0, y = 0, label = "(C) Older adults",
+           hjust = 0, fontface = "bold", size = 5) +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(-1, 1), clip = "off")
+
+# 3) Build each block (label + plot), then wrap the whole block too
+forest_children_named <- wrap_elements(
+  lab_A / children_one + plot_layout(ncol = 1, heights = c(0.08, 1))
+)
+
+forest_adults_named <- wrap_elements(
+  lab_B / adults_one + plot_layout(ncol = 1, heights = c(0.08, 1))
+)
+
+forest_older_adults_named <- wrap_elements(
+  lab_C / older_adults_one + plot_layout(ncol = 1, heights = c(0.08, 1))
+)
+
+# 4) Stack children (top) and adults (bottom)
+patched_forest <- forest_children_named / forest_adults_named +
+  plot_layout(ncol = 1, heights = c(1, 1.2))
+
+
+ggsave(
+  filename  = paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/",
+    "Figure 4AB.pdf"
+  ),
+  plot      = patched_forest,
+  width     = 16,
+  height    = 12,
+  units     = "in",
+  dpi       = 1200,
+  limitsize = FALSE
+)
+
+ggsave(
+  filename  = paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/",
+    "Figure 4C.pdf"
+  ),
+  plot      = forest_older_adults_named,
+  width     = 16,
+  height    = 7,
+  units     = "in",
+  dpi       = 1200,
+  limitsize = FALSE
+)
+```
+
+
+## forest plot for supplement 
+## Step 10: adult forest (UPDATED)
+```{r}
+
+
+
+## ------------------------------------------------------------
+## Adult: Create forest plot using existing forest_panel()
+## ------------------------------------------------------------
+
+# 1. Years and model names
+adult_years  <- c(1998, 2003, 2008, 2013, 2018)
+adult_models <- paste0("lg_adult_", adult_years)
+
+# 2. Clean term labels for adults (NO unknown IMD/ethnicity)
+adult_main <- lg_adult_results %>%
+  filter(model %in% adult_models) %>%
+  mutate(
+    term_label = case_when(
+      # Sex
+      term == "genderFemale" ~ "Female",
+
+      # IMD (removed Unknown)
+      term == "imd_quintile2" ~ "IMD 2",
+      term == "imd_quintile3" ~ "IMD 3",
+      term == "imd_quintile4" ~ "IMD 4",
+      term == "imd_quintile5" ~ "IMD 5",
+
+      # Adult age bands (non-reference levels)
+      term == "age_band25-29" ~ "Age 25–29",
+      term == "age_band30-34" ~ "Age 30–34",
+      term == "age_band35-39" ~ "Age 35–39",
+      term == "age_band40-44" ~ "Age 40–44",
+      term == "age_band45-49" ~ "Age 45–49",
+      term == "age_band50-54" ~ "Age 50–54",
+      term == "age_band55-59" ~ "Age 55–59",
+
+
+      # Ethnicity (removed Not specified)
+      term == "final_ethnicity_groupsAsian or Asian British"                     ~ "Asian",
+      term == "final_ethnicity_groupsBlack, Black British, Caribbean or African" ~ "Black",
+      term == "final_ethnicity_groupsMixed or multiple ethnic groups"            ~ "Mixed ethnicity",
+      term == "final_ethnicity_groupsOther ethnic group"                         ~ "Other ethnicity",
+
+      # Regions
+      term == "regionEast of England"          ~ "East of England",
+      term == "regionLondon"                   ~ "London",
+      term == "regionNorth East"               ~ "North East",
+      term == "regionNorth West"               ~ "North West",
+      term == "regionSouth East"               ~ "South East",
+      term == "regionSouth West"               ~ "South West",
+      term == "regionWest Midlands"            ~ "West Midlands",
+      term == "regionYorkshire and The Humber" ~ "Yorkshire and The Humber",
+
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(term_label))
+
+# 3. Reference rows for adults (Age 20–24 is the reference)
+adult_ref_rows <- expand.grid(
+  model = adult_models,
+  term_label = c(
+    "Male (ref)",
+    "Age 20–24 (ref)",
+    "White (ref)",
+    "IMD 1 (ref)",
+    "East Midlands (ref)"
+  ),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    term    = paste0("ref_", row_number()),
+    OR      = 1,
+    CI_low  = 1,
+    CI_high = 1
+  )
+
+# 4. Combine adult dataset
+lg_adult_plot <- bind_rows(adult_main, adult_ref_rows)
+
+# 5. Term ordering with spacers (removed unknown IMD/ethnicity)
+adult_terms <- c(
+  # Sex
+  "Male (ref)",
+  "Female",
+  " ",
+
+  # Age
+  "Age 20–24 (ref)",
+  "Age 25–29",
+  "Age 30–34",
+  "Age 35–39",
+  "Age 40–44",
+  "Age 45–49",
+  "Age 50–54",
+  "Age 55–59",
+
+  "  ",
+
+  # Ethnicity
+  "White (ref)",
+  "Asian",
+  "Black",
+  "Mixed ethnicity",
+  "Other ethnicity",
+  "   ",
+
+  # IMD
+  "IMD 1 (ref)",
+  "IMD 2",
+  "IMD 3",
+  "IMD 4",
+  "IMD 5",
+  "    ",
+
+  # Region
+  "East Midlands (ref)",
+  "East of England",
+  "London",
+  "North East",
+  "North West",
+  "South East",
+  "South West",
+  "West Midlands",
+  "Yorkshire and The Humber"
+)
+
+# 6. Build adult panels using your existing forest_panel() function
+adult_panels <- lapply(
+  seq_along(adult_years),
+  function(i)
+    forest_panel(
+      df           = lg_adult_plot,
+      year         = adult_years[i],
+      term_levels  = adult_terms,
+      model_prefix = "lg_adult_",
+      show_y       = (i == 1)
+    )
+)
+
+# 7. Combine panels + add Odds Ratio label
+p_adult_combined <- wrap_plots(adult_panels, nrow = 1)
+
+xlabel_adult <- ggplot() +
+  theme_void() +
+  labs(x = "Odds Ratio") +
+  theme(
+    axis.title.x = element_text(
+      size   = 9,
+      margin = margin(t = -5)
+    )
+  )
+
+p_adult_combined <- wrap_plots(
+  p_adult_combined,
+  xlabel_adult,
+  ncol = 1,
+  heights = c(14, 0.1)
+)
+
+# 8. Save plot
+ggsave(
+  filename = paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/",
+    "Figure S3B.pdf"
+  ),
+  plot     = p_adult_combined,
+  width    = 12,
+  height   = 8
+)
+
+```
+
+## Step 11: older adult forest (UPDATED)
+```{r}
+
+
+
+## ------------------------------------------------------------
+## older_adult: Create forest plot using existing forest_panel()
+## ------------------------------------------------------------
+
+# 1. Years and model names
+older_adult_years  <- c(1998, 2003, 2008, 2013, 2018)
+older_adult_models <- paste0("lg_older_adult_", older_adult_years)
+
+# 2. Clean term labels for older_adults (NO unknown IMD/ethnicity)
+older_adult_main <- lg_older_adult_results %>%
+  filter(model %in% older_adult_models) %>%
+  mutate(
+    term_label = case_when(
+      # Sex
+      term == "genderFemale" ~ "Female",
+
+      # IMD (removed Unknown)
+      term == "imd_quintile2" ~ "IMD 2",
+      term == "imd_quintile3" ~ "IMD 3",
+      term == "imd_quintile4" ~ "IMD 4",
+      term == "imd_quintile5" ~ "IMD 5",
+
+      # older_adult age bands (non-reference levels)
+
+      term == "age_band65-69" ~ "Age 65–69",
+      term == "age_band70-74" ~ "Age 70–74",
+      term == "age_band75-79" ~ "Age 75–79",
+      term == "age_band80-84" ~ "Age 80–84",
+      term == "age_band85-89" ~ "Age 85–89",
+      term == "age_band90+"   ~ "Age 90+",
+
+      # Ethnicity (removed Not specified)
+      term == "final_ethnicity_groupsAsian or Asian British"                     ~ "Asian",
+      term == "final_ethnicity_groupsBlack, Black British, Caribbean or African" ~ "Black",
+      term == "final_ethnicity_groupsMixed or multiple ethnic groups"            ~ "Mixed ethnicity",
+      term == "final_ethnicity_groupsOther ethnic group"                         ~ "Other ethnicity",
+
+      # Regions
+      term == "regionEast of England"          ~ "East of England",
+      term == "regionLondon"                   ~ "London",
+      term == "regionNorth East"               ~ "North East",
+      term == "regionNorth West"               ~ "North West",
+      term == "regionSouth East"               ~ "South East",
+      term == "regionSouth West"               ~ "South West",
+      term == "regionWest Midlands"            ~ "West Midlands",
+      term == "regionYorkshire and The Humber" ~ "Yorkshire and The Humber",
+
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(term_label))
+
+# 3. Reference rows for older_adults (Age 20–24 is the reference)
+older_adult_ref_rows <- expand.grid(
+  model = older_adult_models,
+  term_label = c(
+    "Male (ref)",
+    "Age 60–64 (ref)",
+    "White (ref)",
+    "IMD 1 (ref)",
+    "East Midlands (ref)"
+  ),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    term    = paste0("ref_", row_number()),
+    OR      = 1,
+    CI_low  = 1,
+    CI_high = 1
+  )
+
+# 4. Combine older_adult dataset
+lg_older_adult_plot <- bind_rows(older_adult_main, older_adult_ref_rows)
+
+# 5. Term ordering with spacers (removed unknown IMD/ethnicity)
+older_adult_terms <- c(
+  # Sex
+  "Male (ref)",
+  "Female",
+  " ",
+
+  # Age
+  "Age 60–64 (ref)",
+  "Age 65–69",
+  "Age 70–74",
+  "Age 75–79",
+  "Age 80–84",
+  "Age 85–89",
+  "Age 90+",
+  "  ",
+
+  # Ethnicity
+  "White (ref)",
+  "Asian",
+  "Black",
+  "Mixed ethnicity",
+  "Other ethnicity",
+  "   ",
+
+  # IMD
+  "IMD 1 (ref)",
+  "IMD 2",
+  "IMD 3",
+  "IMD 4",
+  "IMD 5",
+  "    ",
+
+  # Region
+  "East Midlands (ref)",
+  "East of England",
+  "London",
+  "North East",
+  "North West",
+  "South East",
+  "South West",
+  "West Midlands",
+  "Yorkshire and The Humber"
+)
+
+# 6. Build older_adult panels using your existing forest_panel() function
+older_adult_panels <- lapply(
+  seq_along(older_adult_years),
+  function(i)
+    forest_panel(
+      df           = lg_older_adult_plot,
+      year         = older_adult_years[i],
+      term_levels  = older_adult_terms,
+      model_prefix = "lg_older_adult_",
+      show_y       = (i == 1)
+    )
+)
+
+# 7. Combine panels + add Odds Ratio label
+p_older_adult_combined <- wrap_plots(older_adult_panels, nrow = 1)
+
+xlabel_older_adult <- ggplot() +
+  theme_void() +
+  labs(x = "Odds Ratio") +
+  theme(
+    axis.title.x = element_text(
+      size   = 9,
+      margin = margin(t = -5)
+    )
+  )
+
+p_older_adult_combined <- wrap_plots(
+  p_older_adult_combined,
+  xlabel_older_adult,
+  ncol = 1,
+  heights = c(14, 0.1)
+)
+
+# 8. Save plot
+ggsave(
+  filename  = paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/",
+    "Figure S3C.pdf"
+  ),
+  plot     = p_adult_combined,
+  width    = 12,
+  height   = 8
+)
+
+```
+
+
+
+## Step 12: patch forest plots
+```{r}
+library(ggplot2)
+library(patchwork)
+
+# 1) Wrap each "combined" forest so it behaves like ONE panel
+children_one <- wrap_elements(p_children_combined)
+adults_one   <- wrap_elements(p_adult_combined)
+older_adults_one   <- wrap_elements(p_older_adult_combined)
+
+# 2) Make label rows
+lab_A <- ggplot() +
+  annotate("text", x = 0, y = 0, label = "(A) Children",
+           hjust = 0, fontface = "bold", size = 5) +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(-1, 1), clip = "off")
+
+lab_B <- ggplot() +
+  annotate("text", x = 0, y = 0, label = "(B) Adults",
+           hjust = 0, fontface = "bold", size = 5) +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(-1, 1), clip = "off")
+
+lab_C <- ggplot() +
+  annotate("text", x = 0, y = 0, label = "(C) Older adults",
+           hjust = 0, fontface = "bold", size = 5) +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 1), ylim = c(-1, 1), clip = "off")
+
+# 3) Build each block (label + plot), then wrap the whole block too
+forest_children_named <- wrap_elements(
+  lab_A / children_one + plot_layout(ncol = 1, heights = c(0.08, 1))
+)
+
+forest_adults_named <- wrap_elements(
+  lab_B / adults_one + plot_layout(ncol = 1, heights = c(0.08, 1))
+)
+
+forest_older_adults_named <- wrap_elements(
+  lab_C / older_adults_one + plot_layout(ncol = 1, heights = c(0.08, 1))
+)
+
+# 4) Stack children (top) and adults (bottom)
+patched_forest <- forest_children_named / forest_adults_named +
+  plot_layout(ncol = 1, heights = c(1, 1.2))
+
+
+ggsave(
+  filename  = paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/",
+    "Figure S3AB.pdf"
+  ),
+  plot      = patched_forest,
+  width     = 16,
+  height    = 12,
+  units     = "in",
+  dpi       = 1200,
+  limitsize = FALSE
+)
+
+ggsave(
+  filename  = paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/",
+    "Figure S3C.pdf"
+  ),
+  plot      = forest_older_adults_named,
+  width     = 16,
+  height    = 7,
+  units     = "in",
+  dpi       = 1200,
+  limitsize = FALSE
+)
+```
+
+
+# Section 7: average repeated time measure
+a patient have n times of repeated visit for a same problem will be include n times (record level average)
+```{r}
+library(dplyr)
+
+## -------------------------------------------------
+## record-level data using Dental Problem Category
+## -------------------------------------------------
+
+rec_use <- dental_records_long_final %>%
+  filter(
+    !is.na(patid),
+    !is.na(obsdate),
+    !is.na(`Dental Problem Category`)
+  ) %>%
+  mutate(
+    obsdate = as.Date(obsdate)
+  ) %>%
+  arrange(patid, `Dental Problem Category`, obsdate)
+
+
+## =================================================
+## 1. First-to-second repeated visit interval only
+## One interval per patient per Dental Problem Category
+## If one patient has repeated visits for multiple conditions,
+## each condition is counted separately.
+## =================================================
+
+repeat_interval_first_to_second <- rec_use %>%
+  arrange(patid, `Dental Problem Category`, obsdate) %>%
+  group_by(patid, `Dental Problem Category`) %>%
+  summarise(
+    n_problem_visits = n(),
+    first_visit_date = first(obsdate),
+    second_visit_date = nth(obsdate, 2),
+    days_first_to_second_visit = as.numeric(second_visit_date - first_visit_date),
+    .groups = "drop"
+  ) %>%
+  filter(n_problem_visits >= 2)
+
+
+average_first_to_second <- repeat_interval_first_to_second %>%
+  summarise(
+    n_intervals = n(),
+    mean_days_first_to_second = mean(days_first_to_second_visit, na.rm = TRUE),
+    sd_days_first_to_second = sd(days_first_to_second_visit, na.rm = TRUE),
+    median_days_first_to_second = median(days_first_to_second_visit, na.rm = TRUE),
+    q1_days_first_to_second = quantile(days_first_to_second_visit, 0.25, na.rm = TRUE),
+    q3_days_first_to_second = quantile(days_first_to_second_visit, 0.75, na.rm = TRUE),
+    min_days_first_to_second = min(days_first_to_second_visit, na.rm = TRUE),
+    max_days_first_to_second = max(days_first_to_second_visit, na.rm = TRUE)
+  )
+
+
+## =================================================
+## 2. All consecutive repeated visit intervals
+## One patient and one condition can contribute multiple intervals:
+## second - first, third - second, fourth - third, etc.
+## =================================================
+
+repeat_interval_all_consecutive <- rec_use %>%
+  arrange(patid, `Dental Problem Category`, obsdate) %>%
+  group_by(patid, `Dental Problem Category`) %>%
+  mutate(
+    visit_order_for_same_condition = row_number(),
+    previous_visit_date = lag(obsdate),
+    days_between_consecutive_visits = as.numeric(obsdate - previous_visit_date)
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(days_between_consecutive_visits))
+
+
+average_all_consecutive <- repeat_interval_all_consecutive %>%
+  summarise(
+    n_intervals = n(),
+    mean_days_all_consecutive = mean(days_between_consecutive_visits, na.rm = TRUE),
+    sd_days_all_consecutive = sd(days_between_consecutive_visits, na.rm = TRUE),
+    median_days_all_consecutive = median(days_between_consecutive_visits, na.rm = TRUE),
+    q1_days_all_consecutive = quantile(days_between_consecutive_visits, 0.25, na.rm = TRUE),
+    q3_days_all_consecutive = quantile(days_between_consecutive_visits, 0.75, na.rm = TRUE),
+    min_days_all_consecutive = min(days_between_consecutive_visits, na.rm = TRUE),
+    max_days_all_consecutive = max(days_between_consecutive_visits, na.rm = TRUE)
+  )
+
+
+## =================================================
+## 3. Combine the two summaries into one table
+## =================================================
+
+average_repeat_visit_time_summary <- bind_rows(
+  average_first_to_second %>%
+    mutate(interval_definition = "First to second visit only") %>%
+    rename(
+      mean_days = mean_days_first_to_second,
+      sd_days = sd_days_first_to_second,
+      median_days = median_days_first_to_second,
+      q1_days = q1_days_first_to_second,
+      q3_days = q3_days_first_to_second,
+      min_days = min_days_first_to_second,
+      max_days = max_days_first_to_second
+    ),
+  
+  average_all_consecutive %>%
+    mutate(interval_definition = "Interval to next visit for a same dental problem") %>%
+    rename(
+      mean_days = mean_days_all_consecutive,
+      sd_days = sd_days_all_consecutive,
+      median_days = median_days_all_consecutive,
+      q1_days = q1_days_all_consecutive,
+      q3_days = q3_days_all_consecutive,
+      min_days = min_days_all_consecutive,
+      max_days = max_days_all_consecutive
+    )
+) %>%
+  dplyr::select(
+    interval_definition,
+    n_intervals,
+    mean_days,
+    sd_days,
+    median_days,
+    q1_days,
+    q3_days,
+    min_days,
+    max_days
+  ) %>%
+  mutate(
+    mean_sd_days = paste0(
+      round(mean_days, 1),
+      " (",
+      round(sd_days, 1),
+      ")"
+    ),
+    median_iqr_days = paste0(
+      round(median_days, 1),
+      " (",
+      round(q1_days, 1),
+      "-",
+      round(q3_days, 1),
+      ")"
+    )
+  )
+
+
+
+## =================================================
+## 4. Summary by Dental Problem Category
+## =================================================
+
+average_first_to_second_by_problem <- repeat_interval_first_to_second %>%
+  group_by(`Dental Problem Category`) %>%
+  summarise(
+    n_intervals = n(),
+    mean_days = mean(days_first_to_second_visit, na.rm = TRUE),
+    sd_days = sd(days_first_to_second_visit, na.rm = TRUE),
+    median_days = median(days_first_to_second_visit, na.rm = TRUE),
+    q1_days = quantile(days_first_to_second_visit, 0.25, na.rm = TRUE),
+    q3_days = quantile(days_first_to_second_visit, 0.75, na.rm = TRUE),
+    min_days = min(days_first_to_second_visit, na.rm = TRUE),
+    max_days = max(days_first_to_second_visit, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    interval_definition = "First to second visit only",
+    mean_sd_days = paste0(
+      round(mean_days, 1),
+      " (",
+      round(sd_days, 1),
+      ")"
+    ),
+    median_iqr_days = paste0(
+      round(median_days, 1),
+      " (",
+      round(q1_days, 1),
+      "-",
+      round(q3_days, 1),
+      ")"
+    )
+  )
+
+
+average_all_consecutive_by_problem <- repeat_interval_all_consecutive %>%
+  group_by(`Dental Problem Category`) %>%
+  summarise(
+    n_intervals = n(),
+    mean_days = mean(days_between_consecutive_visits, na.rm = TRUE),
+    sd_days = sd(days_between_consecutive_visits, na.rm = TRUE),
+    median_days = median(days_between_consecutive_visits, na.rm = TRUE),
+    q1_days = quantile(days_between_consecutive_visits, 0.25, na.rm = TRUE),
+    q3_days = quantile(days_between_consecutive_visits, 0.75, na.rm = TRUE),
+    min_days = min(days_between_consecutive_visits, na.rm = TRUE),
+    max_days = max(days_between_consecutive_visits, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    interval_definition = "Interval to next visit for a same dental problem",
+    mean_sd_days = paste0(
+      round(mean_days, 1),
+      " (",
+      round(sd_days, 1),
+      ")"
+    ),
+    median_iqr_days = paste0(
+      round(median_days, 1),
+      " (",
+      round(q1_days, 1),
+      "-",
+      round(q3_days, 1),
+      ")"
+    )
+  )
+
+
+average_repeat_visit_time_by_problem <- bind_rows(
+  average_first_to_second_by_problem,
+  average_all_consecutive_by_problem
+) %>%
+  dplyr::select(
+    interval_definition,
+    `Dental Problem Category`,
+    n_intervals,
+    mean_days,
+    sd_days,
+    median_days,
+    q1_days,
+    q3_days,
+    min_days,
+    max_days,
+    mean_sd_days,
+    median_iqr_days
+  )
+
+
+
+```
+
+### Step 1: by condition regarless nex condition
+```{r}
+library(dplyr)
+
+## =================================================
+## Time from each condition visit to the next visit
+## regardless of the next visit condition
+##
+## Example:
+## Perio -> Caries -> Perio -> Toothache
+##
+## Intervals counted as:
+## Perio   -> Caries     counted under Perio
+## Caries  -> Perio      counted under Caries
+## Perio   -> Toothache  counted under Perio
+## Toothache has no next visit, so not counted
+## =================================================
+
+condition_to_next_any_visit_records <- rec_use %>%
+  arrange(patid, obsdate) %>%
+  group_by(patid) %>%
+  mutate(
+    current_visit_date = obsdate,
+    current_problem = `Dental Problem Category`,
+    next_visit_date_any_condition = lead(obsdate),
+    next_problem_any_condition = lead(`Dental Problem Category`),
+    days_current_condition_to_next_any_visit = as.numeric(
+      next_visit_date_any_condition - current_visit_date
+    )
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(days_current_condition_to_next_any_visit))
+
+
+## =================================================
+## Summary by current Dental Problem Category
+## =================================================
+
+condition_to_next_any_visit_by_problem <- condition_to_next_any_visit_records %>%
+  group_by(current_problem) %>%
+  summarise(
+    n_intervals = n(),
+    mean_days = mean(days_current_condition_to_next_any_visit, na.rm = TRUE),
+    sd_days = sd(days_current_condition_to_next_any_visit, na.rm = TRUE),
+    median_days = median(days_current_condition_to_next_any_visit, na.rm = TRUE),
+    q1_days = quantile(days_current_condition_to_next_any_visit, 0.25, na.rm = TRUE),
+    q3_days = quantile(days_current_condition_to_next_any_visit, 0.75, na.rm = TRUE),
+    min_days = min(days_current_condition_to_next_any_visit, na.rm = TRUE),
+    max_days = max(days_current_condition_to_next_any_visit, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  rename(
+    `Dental Problem Category` = current_problem
+  ) %>%
+  mutate(
+    interval_definition = "Interval to next visit for dental problems",
+    mean_sd_days = paste0(
+      round(mean_days, 1),
+      " (",
+      round(sd_days, 1),
+      ")"
+    ),
+    median_iqr_days = paste0(
+      round(median_days, 1),
+      " (",
+      round(q1_days, 1),
+      "-",
+      round(q3_days, 1),
+      ")"
+    )
+  ) %>%
+  dplyr::select(
+    interval_definition,
+    `Dental Problem Category`,
+    n_intervals,
+    mean_days,
+    sd_days,
+    median_days,
+    q1_days,
+    q3_days,
+    min_days,
+    max_days,
+    mean_sd_days,
+    median_iqr_days
+  )
+
+
+
+## =================================================
+## Optional: combine overall and by-problem summary
+## =================================================
+
+condition_to_next_any_visit_summary <- 
+  condition_to_next_any_visit_by_problem%>%
+  mutate(
+    `Dental Problem Category` = case_when(
+      `Dental Problem Category` == "Infection" ~ "Dental abscess",
+      TRUE ~ `Dental Problem Category`
+    )
+  ) %>%
+  dplyr::select(
+    `Dental Problem Category`,
+    interval_definition,
+    n_intervals,
+    mean_days,
+    sd_days,
+    median_days,
+    q1_days,
+    q3_days,
+    min_days,
+    max_days,
+    mean_sd_days,
+    median_iqr_days
+  )
+
+
+
+```
+
+## Step 2: repeated visit regardless condition
+```{r}
+library(dplyr)
+
+## -------------------------------------------------
+## New calculation only:
+## interval between consecutive visits regardless of condition
+## This does NOT overwrite your previous data frames
+## -------------------------------------------------
+
+any_problem_visit_gap_records <- dental_records_long_final %>%
+  filter(
+    !is.na(patid),
+    !is.na(obsdate)
+  ) %>%
+  mutate(
+    obsdate_clean_for_any_problem_gap = as.Date(obsdate)
+  ) %>%
+  arrange(patid, obsdate_clean_for_any_problem_gap) %>%
+  group_by(patid) %>%
+  mutate(
+    any_problem_visit_order = row_number(),
+    previous_any_problem_visit_date = lag(obsdate_clean_for_any_problem_gap),
+    days_between_any_problem_visits = as.numeric(
+      obsdate_clean_for_any_problem_gap - previous_any_problem_visit_date
+    )
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(days_between_any_problem_visits))
+
+
+## -------------------------------------------------
+## Summary: mean, SD, median, IQR
+## -------------------------------------------------
+
+any_problem_visit_gap_summary <- any_problem_visit_gap_records %>%
+  summarise(
+    n_intervals = n(),
+    mean_days = mean(days_between_any_problem_visits, na.rm = TRUE),
+    sd_days = sd(days_between_any_problem_visits, na.rm = TRUE),
+    median_days = median(days_between_any_problem_visits, na.rm = TRUE),
+    q1_days = quantile(days_between_any_problem_visits, 0.25, na.rm = TRUE),
+    q3_days = quantile(days_between_any_problem_visits, 0.75, na.rm = TRUE),
+    min_days = min(days_between_any_problem_visits, na.rm = TRUE),
+    max_days = max(days_between_any_problem_visits, na.rm = TRUE)
+  ) %>%
+  mutate(
+    interval_definition = "Interval to next visit for dental problems",
+    mean_sd_days = paste0(
+      round(mean_days, 1),
+      " (",
+      round(sd_days, 1),
+      ")"
+    ),
+    median_iqr_days = paste0(
+      round(median_days, 1),
+      " ( ",
+      round(q1_days, 1),
+      "-",
+      round(q3_days, 1),
+      ")"
+    )
+  ) %>%
+  dplyr::select(
+    interval_definition,
+    n_intervals,
+    mean_days,
+    sd_days,
+    median_days,
+    q1_days,
+    q3_days,
+    min_days,
+    max_days,
+    mean_sd_days,
+    median_iqr_days
+  )
+
+
+
+```
+
+```{r}
+#----------------------------------------------------------------
+# bind table and correct infection name
+#----------------------------------------------------------------
+average_repeat_visit_time_summary$`Dental Problem Category`<-"All problems"
+any_problem_visit_gap_summary$`Dental Problem Category`<-"All problems"
+repeated_time_summary_combined <- bind_rows(average_repeat_visit_time_summary,average_repeat_visit_time_by_problem,any_problem_visit_gap_summary,condition_to_next_any_visit_summary) 
+
+repeated_time_summary_combined <-repeated_time_summary_combined%>%
+  mutate(    `Dental Problem Category` = case_when(    
+    `Dental Problem Category`=="Infection" ~ "Dental abscess",
+    T~    `Dental Problem Category`))%>%
+  mutate( `Interval definition` = interval_definition,
+          `N repeated records` = n_intervals,
+          `Mean (SD)` = mean_sd_days,
+          `Median (IQR)` = median_iqr_days)%>%
+  dplyr::select(    `Dental Problem Category`, 
+                    `N repeated records`,
+                    `Interval definition` ,
+                    `Median (IQR)`) %>%
+  filter(`Interval definition` !="First to second visit only") 
+
+repeated_time_summary_wide <- repeated_time_summary_combined %>%
+  dplyr::select(
+    `Dental Problem Category`,
+    `N repeated records`,
+    `Interval definition`,
+    `Median (IQR)`
+  ) %>%
+  distinct() %>%
+  pivot_wider(
+    names_from = `Interval definition`,
+    values_from = c(`N repeated records`, `Median (IQR)`)
+  )
+
+write_xlsx(
+  repeated_time_summary_wide,
+  paste0(tables_figures, "/objective 1/repeated_time_summary_combined.xlsx"
+))
+```
+
+
+## Step 3: creat bar plot 
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+## -------------------------------------------------
+## Prepare plot data
+## Group n_visits >= 20 as "20+"
+## -------------------------------------------------
+
+visit_count_plot_data <- dental_sample_final %>%
+  filter(!is.na(n_visits)) %>%
+  mutate(
+    n_visits_grouped = case_when(
+      n_visits >= 20 ~ "20+",
+      TRUE ~ as.character(n_visits)
+    ),
+    n_visits_grouped = factor(
+      n_visits_grouped,
+      levels = c(as.character(1:19), "20+")
+    )
+  ) %>%
+  count(n_visits_grouped, name = "n_patients") %>%
+  mutate(
+    percent = n_patients / sum(n_patients) * 100,
+    n_patients_label = scales::comma(n_patients)
+  )
+
+
+## -------------------------------------------------
+## Bar chart
+## Y-axis = percentage of patients
+## Bar label = number of patients
+## Horizontal background grid lines only
+## -------------------------------------------------
+
+p_visit_count <- ggplot(
+  visit_count_plot_data %>% filter(n_visits_grouped != "1"),
+  aes(x = n_visits_grouped, y = percent)
+) +
+  geom_col(
+    fill = "#E97F63",
+    colour = "#E97F63",
+    width = 0.8
+  ) +
+  geom_text(
+    aes(label = n_patients_label),
+    vjust = -0.3,
+    size = 3
+  ) +
+  scale_y_continuous(
+    labels = function(x) paste0(x, "%"),
+    breaks = scales::pretty_breaks(n = 6),
+    expand = expansion(mult = c(0, 0.08))
+  ) +
+  labs(
+    x = "Number of visits",
+    y = "Percentage of patients"
+  ) +
+  theme_classic() +
+  theme(
+    panel.grid.major.y = element_line(colour = "grey85", linewidth = 0.3),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank()
+  )
+
+ggsave(
+  filename = paste0(tables_figures, "/objective 1/Distribution of number of visits per patient.jpeg"),
+  plot = p_visit_count,
+  width = 8,
+  height = 5,
+  dpi = 600
+)
+```
+
+
+##Step 4: calculate number of records with 0 interval (at the same date)
+```{r}
+same_date_count <- dental_records_long_final %>%
+  group_by(patid, obsdate) %>%
+  summarise(
+    n_records = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_records))
+
+same_date_multiple <- dental_records_long_final %>%
+  count(patid, obsdate, name = "n_records") %>%
+  filter(n_records > 1) %>%
+  arrange(desc(n_records))
+
+
+same_date_multiple %>%
+  count(n_records)
+
+(sum(same_date_multiple$n_records)/nrow(dental_records_long_final))*100
+```
+
+
+#### update table 1 stratefied by cases 
+
+```{r}
+
+source("tableone_create_export_v1.R")
+# Categorical variables
+#---------------------------------------------------------
+# Create the analysis dataset
+#---------------------------------------------------------
+table1_sample_data <- sample_final %>%
+  left_join(
+    dental_sample_final %>%
+      dplyr::select(patid, first_dcat),
+    by = "patid"
+  )
+
+#---------------------------------------------------------
+# Run Table 1 stratified by dental-visit status
+#---------------------------------------------------------
+table1_sample_events <- table1(
+  data = table1_sample_data,
+  
+  vars = c(
+    "age_first_dental",
+    "gender",
+    "final_ethnicity_groups",
+    "final_ethnicity",
+    "imd_quintile",
+    "dent_visit_count2",
+    "first_dcat",
+    "ever_had_repeated_visit_same_problem",
+    "repeated_visit_for_first_problem"
+  ),
+  
+  strata = "had_dental_visit",
+  
+  factorVars = factorVars,
+  
+  addOverall = TRUE,
+  
+  directory = paste0(
+    "P:/Precision Health Programme/JW Research/DEEP study/",
+    "GP Dental/Analysis_results_CG/tables_figures/",
+    "lancet scaled/formatted/"
+  ),
+  
+  filename = "Table 1 stratified by dental visit status.xlsx"
+)
+
+
+```
+
+
+

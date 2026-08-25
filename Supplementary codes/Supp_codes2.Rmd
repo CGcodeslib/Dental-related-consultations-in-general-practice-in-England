@@ -1,0 +1,4177 @@
+---
+title: "Supplement codes 2: Dental-related consultations in general practice in England: a population-based retrospective study of national trends and inequalities"
+author: "CG"
+output: html_document
+---
+# restart the working environment 
+```{r}
+rm(list = ls())
+```
+
+
+# library
+```{r setup, include=FALSE}
+library(readxl)
+library(writexl)
+library(tidyverse)
+library(tidyr)
+library(popEpi)
+library(epitools)
+
+#install.packages(c("sf","ggplot2","dplyr","viridis", "rgeos", "rgdal", "maptool"))
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(viridis)
+library(epiR)
+library(PHEindicatormethods)
+library(broom)
+library(dplyr)
+library(purrr)
+library(tidyverse)
+library(lubridate)
+library(MASS)
+library(sandwich)
+library(lmtest)
+library(segmented)
+# install.packages("forecast")
+library(forecast)
+library(MASS)     # glm.nb
+library(splines)  # ns()
+
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(grid)   # for arrow()
+#library(rgeos)
+#library(rgdal)
+#library(maptools)
+library(forcats)
+library(cowplot)
+library(pdftools)
+library(patchwork)
+library(ggplot2)
+
+
+
+
+# frequent used path
+tables_figures <- "Analysis_results_CG/tables_figures/lancet scaled"
+processed_data <- "Analysis_results_CG/processed_data_v2"
+raw_data <- "Analysis_results_CG/raw_data"
+final_curated_data <- "Analysis_results_CG/processed_data_v2/final_curated_data"
+
+code_lists <- "Analysis_results_CG/code_list"
+
+
+# 2. define study period
+study_start <- as.Date("1998-01-01")
+
+study_end <- as.Date("2025-12-31")
+
+
+# 3. load function
+source_folder <- function(folder) {
+  files <- sort(list.files(folder, pattern = "\\.R$", full.names = TRUE))
+  
+  for (f in files) {
+    message("Sourcing: ", basename(f))
+    try(source(f, local = .GlobalEnv), silent = FALSE)
+  }
+}
+
+folder <- "ApendixA_supp_functions"
+
+source_folder(folder)
+
+```
+
+
+#########################################################################
+# Section 1: calculate ir scale ratio for all
+
+# Section 1.1: overall ir convert 
+## Step 1: weight ir 
+```{r}
+# 1. create weight variable by n events/ total cases
+ir_summary_table_S7$weight <- as.numeric(ir_summary_table_S7$`N events`/ir_summary_table_S7$total_cases)
+
+# 2. use overall weight for those NA 
+overall_weight <- as.numeric(ir_summary_table_S7$weight[ir_summary_table_S7$variable == "overall"])
+overall_weight
+
+ir_summary_table_S7$weight <- ifelse(is.na(ir_summary_table_S7$weight),overall_weight, ir_summary_table_S7$weight)
+table(ir_summary_table_S7$weight == overall_weight, useNA = "ifany")# imd6+ethnicity6+ethnicity14+overall1 =27, correct
+
+# 3: apply weight to ir 1000 and ci
+ir_summary_table_scaled <- ir_summary_table_S7 %>%
+mutate(`IR per 1000py` = `IR per 1000py` * weight,
+`Lower CI` = `Lower CI` * weight,
+`upper CI` = `upper CI` * weight
+)
+
+```
+
+## step 2: format table to export
+```{r}
+ir_summary_table_scaled_formatted <- ir_summary_table_scaled %>%
+filter(variable != "Ethnicity (14 groups)") %>%
+mutate(
+Variable = recode(
+variable,
+overall = "Overall",
+Region = "English region",
+gender = "Sex",
+`Dental problem category` = "Dental problem category",
+`Age Band` = "Age",
+.default = variable
+),
+Level = case_when(
+variable == "overall" ~ "All participants",
+TRUE ~ as.character(level)),
+Weight = round(weight, 2),
+`IR per 1,000 person-years (95% CI)` = sprintf(
+"%.2f (%.2f–%.2f)",
+`IR per 1000py`,
+`Lower CI`,
+`upper CI`)) %>%
+dplyr::select(
+Variable,
+Level,
+`Total person years`,
+`N events`,
+Weight,
+`IR per 1,000 person-years (95% CI)`
+) %>%
+mutate(
+Variable = if_else(
+duplicated(Variable),
+"",Variable))
+
+
+ir_summary_table_scaled_formatted <- ir_summary_table_scaled_formatted %>%
+  mutate(
+    `N events` = formatC(`N events`, format = "f", digits = 0, big.mark = ","),
+  `Total person years` = formatC(
+    `Total person years`,format = "f", digits = 0,big.mark = ","),
+    `IR per 1000 PY (95%CI)` = gsub("\\.","·",`IR per 1,000 person-years (95% CI)`)
+  )%>%
+   dplyr::select(-`IR per 1,000 person-years (95% CI)`,-Weight)
+write_xlsx(ir_summary_table_scaled_formatted , paste0(tables_figures, "/formatted/Table S7.Incidece rate of having GP visit for dental problems.xlsx"))
+```
+
+# Section 1.2: annual ir convert
+## Step 1: combine data
+```{r}
+
+# 1. left join these data to create scaled data 
+annual_ir_age2_scaled <- annual_ir_age2 %>%
+  left_join(annual_ir_age2_overall, by = c("age_band","year"))
+
+annual_ir_gender_scaled <- annual_ir_gender %>%
+  left_join(annual_ir_gender_overall, by = c("Sex","year"))
+
+annual_ir_region_scaled <- annual_ir_region %>%
+  left_join(annual_ir_region_overall, by = c("Region","year"))
+
+annual_ir_scaled <- annual_summary_table %>%
+  left_join(annual_ir_overall, by = c("year"))
+
+annual_ir_dcat_scaled <- annual_summary_dcat %>%
+  mutate(`Dental problem categories` = case_when (
+    `Dental problem categories` == "Infection" ~"Dental abscess",
+    TRUE~ `Dental problem categories`
+  ))%>%
+  left_join(annual_ir_dcat_overall, by = c("Dental problem categories","year"))
+
+
+```
+
+
+
+## Step 2: weight ir 
+```{r}
+annual_ir_list_scaled <- list(annual_ir_age2_scaled,annual_ir_gender_scaled, annual_ir_region_scaled,annual_ir_scaled,annual_ir_dcat_scaled)
+
+# 1. get annual weight using actual weight 
+annual_ir_list_scaled <- lapply(annual_ir_list_scaled,
+function(df) {
+  
+# 0. create ci 
+df <- df %>%
+rowwise() %>%
+mutate(
+tmp = list(epi.conf(cbind(cases, total_person_years),ctype = "inc.rate",method = "exact") * 1000),
+lower95 = tmp$lower,
+upper95 = tmp$upper
+) %>%
+dplyr::select(-tmp) %>%
+ungroup()
+# 1. Create weight
+df$weight <- as.numeric(df$`cases` / df$cases_overall)
+
+# 2. Scale IR and CIs
+df <- df %>%
+mutate(
+`ir1000_scaled` = `ir1000` * weight,
+ lower95_scaled = lower95*weight,
+ upper95_scaled = upper95*weight
+)
+df})
+
+annual_ir_age2_scaled <- annual_ir_list_scaled[[1]]
+annual_ir_gender_scaled <- annual_ir_list_scaled[[2]]
+annual_ir_region_scaled <- annual_ir_list_scaled[[3]]
+annual_ir_scaled <- annual_ir_list_scaled[[4]]
+annual_ir_dcat_scaled <- annual_ir_list_scaled[[5]]
+
+# 3. add annual ir weight to imd and ethnicity 
+annual_ir_6eth_scaled <- annual_ir_6eth %>%
+  left_join(annual_ir_scaled %>% dplyr::select(year, weight), by = "year")%>%
+  rowwise() %>%
+mutate(
+tmp = list(epi.conf(cbind(cases, total_person_years),ctype = "inc.rate",method = "exact") * 1000),
+lower95 = tmp$lower,
+upper95 = tmp$upper
+) %>%
+dplyr::select(-tmp) %>%
+ungroup()%>%
+  mutate(
+`ir1000_scaled` = `ir1000` * weight,
+ lower95_scaled = lower95*weight,
+ upper95_scaled = upper95*weight
+)
+
+annual_ir_imd_scaled <- annual_ir_imd %>%
+ left_join(annual_ir_scaled %>% dplyr::select(year, weight), by = "year")%>%
+  rowwise() %>%
+mutate(
+tmp = list(epi.conf(cbind(cases, total_person_years),ctype = "inc.rate",method = "exact") * 1000),
+lower95 = tmp$lower,
+upper95 = tmp$upper
+) %>%
+dplyr::select(-tmp) %>%
+ungroup()%>%
+  mutate(
+`ir1000_scaled` = `ir1000` * weight,
+ lower95_scaled = lower95*weight,
+ upper95_scaled = upper95*weight
+)
+```
+
+
+## Step 3: recreate plot
+
+### Step 3.1: update age annual incidence rate 
+```{r}
+# 5. plot annual age ir
+lp_annual_ir_age2 <- make_lineplot(
+  data    = annual_ir_age2_scaled %>% mutate(`Age group` =`Age group.x`),
+  x       = factor(year),
+  y       = ir1000_scaled,
+  color   = `Age group`,
+  title   = "(B) Incidence rate by age group",
+  xlab    = "Year",
+  ylab    = "Incidence rate (per 1000 PY)",
+  outfile = paste0(tables_figures, "/figure_1a_annual_ir_age2_lineplot_scaled.jpeg")
+)
+
+```
+
+### Step 3.2: update sex annual IR plots
+```{r}
+
+
+# 5. plot annual gender ir
+lp_annual_ir_sex <- make_lineplot(
+  data    = annual_ir_gender_scaled,
+  x       = factor(year),
+  y       = ir1000_scaled,
+  color   = Sex,
+  title   = "Incidence rate by sex",
+  xlab    = "Year",
+  ylab    = "Incidence rate (per 1000 PY)",
+  outfile = paste0(tables_figures, "/figure_1a_annual_ir_sex_lineplot_scaled.jpeg")
+)
+
+
+```
+### Seto 3.3: update ethnicity plot
+
+```{r}
+
+# 5. plot annual 6eth ir
+lp_annual_ir_6eth<- make_lineplot(
+  data    = annual_ir_6eth_scaled %>% filter(Ethnicity != "Not specified"),
+  x       = factor(year),
+  y       = ir1000_scaled,
+  color   = Ethnicity,
+  title   = "(C) Incidence rate by ethnicity",
+  xlab    = "Year",
+  ylab    = "Incidence rate (per 1000 PY)",
+  outfile = paste0(tables_figures, "/figure_1a_annual_ir_6eth_lineplot_scaled.jpeg")
+)
+
+```
+
+### Step 3.4: update Dcat 
+```{r}
+
+lp_annual_dcat <- make_lineplot(
+  data    = annual_ir_dcat_scaled %>% mutate(`Dental problem` = `Dental problem categories`),
+  x       = factor(year),
+  y       = ir1000_scaled,
+  color =   `Dental problem`,
+  title   = "(F) Incidence rate by dental problem",
+  xlab    = "Year",
+  ylab    = "Incidence rate (per 1000 PY)",
+  outfile = paste0(tables_figures, "/figure_1a_dcat_annual_ir_lineplot_scaled.jpeg")
+)
+
+
+```
+
+### Step 3.5: update overall
+```{r}
+lp_annual_overall  <-make_lineplot(
+  data    = annual_ir_scaled,
+  x       = factor(year),
+  y       = ir1000_scaled,
+  title   = "(A) Overall incidence rate",
+  xlab    = "Year",
+  ylab    = "Incidence rate (per 1000 PY)",
+  outfile = paste0(tables_figures, "/figure_1a_annual_ir_lineplot_scaled.jpeg")
+)
+
+
+```
+
+
+### Step 3.6: updated imd
+```{r}
+# 5. plot annual imd ir
+lp_annual_ir_imd <- make_lineplot(
+  data    = annual_ir_imd_scaled %>% filter(IMD != "Unknown"),
+  x       = factor(year),
+  y       = ir1000_scaled,
+  color   = IMD,
+  title   = "(D) Incidence rate by IMD",
+  xlab    = "Year",
+  ylab    = "Incidence rate (per 1000 PY)",
+  outfile = paste0(tables_figures, "/figure_1a_annual_ir_imd_lineplot_scaled.jpeg")
+)
+
+
+```
+
+
+### Step 3.7 updated region
+```{r}
+# 5. plot annual region ir
+lp_annual_ir_region <- make_lineplot(
+  data    = annual_ir_region_scaled %>% mutate(`English region` = Region),
+  x       = factor(year),
+  y       = ir1000_scaled,
+  color   = `English region`,
+  title   = "(E) Incidence rate by English region",
+  xlab    = "Year",
+  ylab    = "Incidence rate (per 1000 PY)",
+  outfile = paste0(tables_figures, "/figure_1a_annual_ir_region_lineplot_scaled.jpeg")
+)
+
+
+```
+
+
+### patch the reordered plots
+
+```{r}
+library(patchwork)
+library(ggplot2)
+
+
+
+annual_ir_scaled_filter <- annual_ir_scaled %>%
+  mutate(Sex = "Overall") %>%
+  dplyr::select(year, Sex, ir1000_scaled)
+
+annual_ir_gender_overall_scaled <- annual_ir_gender_scaled %>%
+  dplyr::select(year, Sex, ir1000_scaled) %>%
+  bind_rows(annual_ir_scaled_filter)
+
+lp_annual_overall  <-make_lineplot(
+  data    = annual_ir_gender_overall_scaled,
+  x       = factor(year),
+  y       = ir1000_scaled,
+  color =  Sex,
+  title   = "(A) Overall incidence rate and 
+  incidence rate by Sex",
+  xlab    = "Year",
+  ylab    = "Incidence rate (per 1000 PY)",
+  outfile = paste0(tables_figures, "/figure_1a_annual_ir_lineplot_scaled.jpeg")
+)
+
+
+
+# ---- annual-only objects to avoid overwriting ----
+annual_p_list <- list(
+  overall = lp_annual_overall,
+  eth6    = lp_annual_ir_6eth,
+  age2    = lp_annual_ir_age2,
+  imd     = lp_annual_ir_imd,
+  region  = lp_annual_ir_region,
+  dcat    = lp_annual_dcat
+)
+
+# ---- Common y-range across all annual plots ----
+annual_get_plot_yrange <- function(annual_p) {
+  annual_b <- ggplot_build(annual_p)
+
+  annual_yr <- unlist(lapply(annual_b$layout$panel_params, function(annual_pp) {
+    if (!is.null(annual_pp$y.range)) annual_pp$y.range else c(NA_real_, NA_real_)
+  }))
+
+  if (all(is.na(annual_yr))) {
+    annual_yr <- unlist(lapply(annual_b$layout$panel_params, function(annual_pp) {
+      if (!is.null(annual_pp$y$range$range)) annual_pp$y$range$range else c(NA_real_, NA_real_)
+    }))
+  }
+
+  range(annual_yr, na.rm = TRUE)
+}
+
+annual_y_ranges <- lapply(annual_p_list, annual_get_plot_yrange)
+annual_y_lim <- range(do.call(c, annual_y_ranges), na.rm = TRUE)
+
+# ---- Apply common y-limits (no legend positioning here yet) ----
+annual_p_list <- lapply(annual_p_list, function(annual_p) {
+  annual_p + coord_cartesian(ylim = annual_y_lim)
+})
+
+# ---- Left column: legends on the LEFT; Right column: legends on the RIGHT ----
+annual_left_col <-
+  (annual_p_list$overall /annual_p_list$eth6  /  annual_p_list$region) &
+  theme(legend.position = "left")
+
+annual_right_col <-
+  (annual_p_list$age2 / annual_p_list$imd / annual_p_list$dcat) &
+  theme(legend.position = "right")
+
+# ---- Combine into 2 columns x 3 rows ----
+annual_lplot <- annual_left_col | annual_right_col
+
+
+ggsave(
+  filename = paste0(tables_figures, "/formatted/Figure 3. Annual incidence rate overall and by sociodemographic factors.jpeg"),
+  plot     = annual_lplot,
+  width    = 14,
+  height   = 14,
+  units    = "in",
+  dpi      = 1200
+)
+ggsave(
+  filename = paste0(tables_figures, "/formatted/Figure 3. Annual incidence rate overall and by sociodemographic factors.pdf"),
+  plot     = annual_lplot,
+  width    = 14,
+  height   = 14,
+  units    = "in",
+  dpi      = 1200
+)
+```
+
+## Step 4: extract the maxium IR and minium and their CI 
+the format table code has error need to sort 
+it doesnot contains correct level... 
+```{r}
+# ============================================================
+# Extract minimum and maximum annual scaled IR
+# ============================================================
+
+library(dplyr)
+library(purrr)
+library(writexl)
+
+
+# 1. Put all scaled annual IR datasets into a named list
+annual_ir_list_scaled <- list(
+  ethnicity = annual_ir_6eth_scaled,
+  age       = annual_ir_age2_scaled,
+  sex       = annual_ir_gender_scaled,
+  imd       = annual_ir_imd_scaled,
+  region    = annual_ir_region_scaled,
+  overall   = annual_ir_scaled,
+  dcat      = annual_ir_dcat_scaled
+)
+
+
+# 2. Function to extract the row with:
+#    - minimum scaled IR
+#    - maximum scaled IR
+#    from each dataset
+extract_min_max_ir <- function(df, source_name) {
+  
+  min_row <- df %>%
+    filter(!is.na(ir1000_scaled)) %>%
+    slice_min(
+      order_by = ir1000_scaled,
+      n = 1,
+      with_ties = FALSE
+    ) %>%
+    mutate(extreme = "Minimum")
+  
+  max_row <- df %>%
+    filter(!is.na(ir1000_scaled)) %>%
+    slice_max(
+      order_by = ir1000_scaled,
+      n = 1,
+      with_ties = FALSE
+    ) %>%
+    mutate(extreme = "Maximum")
+  
+  bind_rows(min_row, max_row) %>%
+    mutate(
+      source = source_name,
+      .before = 1
+    )
+}
+
+
+# 3. Extract minimum and maximum scaled IR
+annual_ir_minmax_table_scaled <- imap_dfr(
+  annual_ir_list_scaled,
+  extract_min_max_ir
+)
+
+
+# 4. Function to identify the level/group column
+get_level_label <- function(df) {
+  
+  candidate_cols <- c(
+    "age_group",
+    "age2",
+    "sex",
+    "gender",
+    "ethnicity",
+    "eth6",
+    "imd",
+    "region",
+    "dcat",
+    "level",
+    "group",
+    "group_var",
+    "group_name"
+  )
+  
+  existing_cols <- intersect(candidate_cols, names(df))
+  
+  # If no grouping variable exists
+  if (length(existing_cols) == 0) {
+    return(rep(NA_character_, nrow(df)))
+  }
+  
+  # Create empty character vector
+  out <- rep(NA_character_, nrow(df))
+  
+  # Fill using whichever grouping column contains a value
+  for (col in existing_cols) {
+    
+    vals <- as.character(df[[col]])
+    
+    rows_to_fill <- is.na(out) & !is.na(vals)
+    
+    out[rows_to_fill] <- vals[rows_to_fill]
+  }
+  
+  return(out)
+}
+
+
+# 5. Format final minimum/maximum table
+annual_ir_minmax_table_scaled_fmt <- annual_ir_minmax_table_scaled %>%
+  mutate(
+
+    Variable = case_when(
+      source == "overall"   ~ "Overall",
+      source == "age"       ~ "Age group",
+      source == "sex"       ~ "Sex",
+      source == "ethnicity" ~ "Ethnicity",
+      source == "imd"       ~ "IMD",
+      source == "region"    ~ "English region",
+      source == "dcat"      ~ "Dental problem",
+      TRUE                  ~ source
+    ),
+
+    Level = case_when(
+      source == "age"       ~ as.character(`Age group.x`),
+      source == "sex"       ~ as.character(Sex),
+      source == "dcat"      ~ as.character(`Dental problem categories`),
+      source == "imd"       ~ as.character(IMD),
+      source == "ethnicity" ~ as.character(Ethnicity),
+      source == "region"    ~ as.character(Region),
+      source == "overall"   ~ "Overall",
+      TRUE                  ~ NA_character_
+    ),
+
+    `IR per 1000py (95% CI)` = sprintf(
+      "%.2f (%.2f - %.2f)",
+      ir1000_scaled,
+      lower95_scaled,
+      upper95_scaled
+    ),
+
+    `Total person years` = as.integer(round(total_person_years)),
+    Weight = sprintf("%.2f", weight)
+  ) %>%
+  
+  dplyr::select(
+    Variable,
+    Level,
+    Extreme = extreme,
+    Year = year,
+    `Total person years`,
+    `N events` = cases,
+    Weight,
+    `IR per 1000py (95% CI)`
+  ) %>%
+
+  # Overall first, then remaining variables alphabetically
+  arrange(
+    Variable != "Overall",
+    Variable,
+    Extreme
+  )
+
+
+annual_ir_minmax_table_scaled_fmt <- annual_ir_minmax_table_scaled_fmt%>%
+    mutate(
+  `N events` = formatC(`N events`, format = "f", digits = 0, big.mark = ","),
+`Total person years` = formatC(
+  `Total person years`,format = "f", digits = 0,big.mark = ","),
+    `IR per 1000 PY (95%CI)` = gsub("\\.","·",`IR per 1000py (95% CI)`)
+)%>%
+  dplyr::select(-`IR per 1000py (95% CI)`, -Weight)
+
+# 7. Export final table
+write_xlsx(
+  annual_ir_minmax_table_scaled_fmt,
+  paste0(
+    tables_figures,
+    "/formatted/Table S9. Maximum and minimum annual incidence rates by variable.xlsx"
+  )
+)
+```
+
+
+# Section 1.3: ESP scale
+## Step 1: combine data
+```{r}
+ir_age_gender_scaled <- ir_ab2_gender %>%
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_age_gender_overall,
+    by = c("gender", "age_band2")
+  )
+```
+
+
+## Step 2: weight ir 
+```{r}
+# 1. create weight variable by n events/ total cases
+ir_age_gender_scaled$weight <- as.numeric(ir_age_gender_scaled$cases/ir_age_gender_scaled$total_cases)
+
+
+
+# 2: apply weight to ir 1000 and ci
+ir_age_gender_scaled <- ir_age_gender_scaled %>%
+mutate(`ir1000_scaled` = `ir1000` * weight,
+`lower95_scaled` = `lower95_1000` * weight,
+`upper95_scaled` = `upper95_1000` * weight
+)
+
+```
+
+
+## Step 3: asir
+```{r}
+
+## ============================================================
+## Step 2: Calculate overall age-standardised scaled IR
+## ============================================================
+
+asir_age_scaled <- ir_age_overall %>%
+  summarise(
+    
+    value_scaled = sum(
+      `IR per 1000py` * esp2013,
+      na.rm = TRUE
+    ) / sum(
+      esp2013,
+      na.rm = TRUE
+    ),
+    
+    lowercl_scaled = sum(
+      `Lower CI` * esp2013,
+      na.rm = TRUE
+    ) / sum(
+      esp2013,
+      na.rm = TRUE
+    ),
+    
+    uppercl_scaled = sum(
+      `upper CI` * esp2013,
+      na.rm = TRUE
+    ) / sum(
+      esp2013,
+      na.rm = TRUE
+    ),
+    
+    total_count_scaled = sum(
+      `N events`,
+      na.rm = TRUE
+    ),
+    
+    total_pop_scaled = sum(
+      `Total person years`,
+      na.rm = TRUE
+    )
+  )
+
+
+## ============================================================
+## Step 3: Calculate female age-standardised scaled IR
+## ============================================================
+
+asir_female_scaled <- ir_age_gender_scaled %>%
+  filter(gender == "Female") %>%
+  summarise(
+    
+    value_scaled = sum(
+      ir1000_scaled * (esp2013 / 2),
+      na.rm = TRUE
+    ) / sum(
+      esp2013 / 2,
+      na.rm = TRUE
+    ),
+    
+    lowercl_scaled = sum(
+      lower95_scaled * (esp2013 / 2),
+      na.rm = TRUE
+    ) / sum(
+      esp2013 / 2,
+      na.rm = TRUE
+    ),
+    
+    uppercl_scaled = sum(
+      upper95_scaled * (esp2013 / 2),
+      na.rm = TRUE
+    ) / sum(
+      esp2013 / 2,
+      na.rm = TRUE
+    ),
+    
+    total_count_scaled = sum(
+      cases,
+      na.rm = TRUE
+    ),
+    
+    total_pop_scaled = sum(
+      total_person_year,
+      na.rm = TRUE
+    )
+  )
+
+
+## ============================================================
+## Step 4: Calculate male age-standardised scaled IR
+## ============================================================
+
+asir_male_scaled <- ir_age_gender_scaled %>%
+  filter(gender == "Male") %>%
+  summarise(
+    
+    value_scaled = sum(
+      ir1000_scaled * (esp2013 / 2),
+      na.rm = TRUE
+    ) / sum(
+      esp2013 / 2,
+      na.rm = TRUE
+    ),
+    
+    lowercl_scaled = sum(
+      lower95_scaled * (esp2013 / 2),
+      na.rm = TRUE
+    ) / sum(
+      esp2013 / 2,
+      na.rm = TRUE
+    ),
+    
+    uppercl_scaled = sum(
+      upper95_scaled * (esp2013 / 2),
+      na.rm = TRUE
+    ) / sum(
+      esp2013 / 2,
+      na.rm = TRUE
+    ),
+    
+    total_count_scaled = sum(
+      cases,
+      na.rm = TRUE
+    ),
+    
+    total_pop_scaled = sum(
+      total_person_year,
+      na.rm = TRUE
+    )
+  )
+
+
+## ============================================================
+## Step 5: Add labels
+## ============================================================
+
+asir_age_scaled <- asir_age_scaled %>%
+  mutate(
+    variable_scaled = "Overall"
+  )
+
+asir_female_scaled <- asir_female_scaled %>%
+  mutate(
+    variable_scaled = "Female"
+  )
+
+asir_male_scaled <- asir_male_scaled %>%
+  mutate(
+    variable_scaled = "Male"
+  )
+
+
+## ============================================================
+## Step 6: Combine scaled ASIR results
+## ============================================================
+
+asir_combined_scaled <- bind_rows(
+  asir_age_scaled,
+  asir_female_scaled,
+  asir_male_scaled
+)
+
+
+## ============================================================
+## Step 7: Format combined table
+## ============================================================
+
+asir_combined_formatted_scaled <- asir_combined_scaled %>%
+  mutate(
+    
+    `Standardised IR` = variable_scaled,
+    
+    `N events` = as.integer(
+      total_count_scaled
+    ),
+    
+    `Person years` = as.integer(
+      round(total_pop_scaled)
+    ),
+    
+    `IR per 1000py (95% CI)` = sprintf(
+      "%.2f (%.2f - %.2f)",
+      value_scaled,
+      lowercl_scaled,
+      uppercl_scaled
+    )
+  ) %>%
+  dplyr::select(
+    `Standardised IR`,
+    `N events`,
+    `Person years`,
+    `IR per 1000py (95% CI)`
+  )
+
+
+## ============================================================
+## Step 8: View final table
+## ============================================================
+
+asir_combined_formatted_scaled <- asir_combined_formatted_scaled %>%
+  mutate(
+   `N events` = formatC(`N events`, format = "f", digits = 0, big.mark = ","),
+ `Total person years` = formatC(
+   `Person years`,format = "f", digits = 0,big.mark = ","),
+    `IR per 1000 PY (95%CI)` = gsub("\\.","·",`IR per 1000py (95% CI)`)
+ )%>%
+  dplyr::select(-`IR per 1000py (95% CI)`, -`Person years`)
+
+
+## ============================================================
+## Step 9: Export
+## ============================================================
+
+write_xlsx(
+  asir_combined_formatted_scaled,
+  paste0(
+    tables_figures,
+    "/formatted/Table S6.Directly standardised incidence rate based on the ESP2013 population, per 1000 person years_scaled.xlsx"
+  )
+)
+```
+
+
+# Section 1.4: update ITS model
+## Step 1: import policy and IR
+```{r}
+
+
+ir_monthly <- records_time_agg %>%
+  dplyr::select(year, month, total_records, total_person_years,
+                ir1000, lower95_1000, upper95_1000, label)
+
+# 1. fill in 2023-12-31 for those end time NA
+policy_time$end_time[is.na(policy_time$end_time)] <- "2023-12-31"
+
+
+# 2. convert to date variable
+policy_time$start_time <- as.Date(policy_time$start_time)
+policy_time$end_time <- as.Date(policy_time$end_time)
+
+```
+
+
+## Step 2: re aggregate the data 
+```{r}
+## 0. Make sure dates are Date class ---------------------------------------
+
+policy_time <- policy_time %>%
+  mutate(
+    start_time = as.Date(start_time),
+    end_time   = as.Date(end_time)
+  ) %>%
+  arrange(start_time)
+
+## 1. Monthly ir data ------------------------------------------------------
+
+ir_monthly$date <- as.Date(paste0(ir_monthly$label, "-01"))
+
+records_time_agg <- ir_monthly %>%
+  arrange(date)
+
+## 2A. Expand policies into MONTHLY rows for 0/1 (use original end_time) ---
+
+policy_monthly_dummy <- policy_time %>%
+  mutate(
+    start_month = floor_date(start_time, "month"),
+    end_month   = floor_date(end_time, "month")
+  ) %>%
+  rowwise() %>%
+  mutate(date = list(seq.Date(start_month, end_month, by = "month"))) %>%
+  unnest(date) %>%
+  ungroup()
+
+## 3A. Create 0/1 wide policy-active matrix (unchanged logic) -------------
+
+policy_wide <- policy_monthly_dummy %>%
+  mutate(active = 1L) %>%
+  dplyr::select(date, policy_label, active) %>%
+  pivot_wider(
+    names_from  = policy_label,
+    values_from = active,
+    values_fill = 0L
+  )
+
+## 4A. Join 0/1 policy-active to monthly ir -------------------------------
+
+records_time_agg <- records_time_agg %>%
+  left_join(policy_wide, by = "date") %>%
+  mutate(across(starts_with("policy_"), ~ replace_na(., 0L))) %>%
+  mutate(across(starts_with("gap_"), ~ replace_na(., 0L))) %>%
+  arrange(date)
+
+## 5. Create time index (1, 2, 3, ..., per month) -------------------------
+
+records_time_agg <- records_time_agg %>%
+  mutate(time_point = row_number())
+
+## 2B. Prepare policy table for SLOPES (end at next policy start - 1 month)
+
+policy_for_slope <- policy_time %>%
+  arrange(start_time) %>%
+  mutate(
+    next_start  = lead(start_time),
+    start_month = floor_date(start_time, "month"),
+    eff_end = 
+      # end until policy end
+    floor_date(end_time, "month")
+  )
+
+## 3B. Expand into MONTHLY rows for slopes (start_month -> eff_end) -------
+
+policy_monthly_slope <- policy_for_slope %>%
+  rowwise() %>%
+  mutate(date = list(seq.Date(start_month, eff_end, by = "month"))) %>%
+  unnest(date) %>%
+  ungroup()
+
+## 4B. Create slope variables (0,1,2,... only while active for slope) -----
+
+policy_monthly_slope <- policy_monthly_slope %>%
+  group_by(policy_label) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(slope = row_number() - 1L) %>%
+  ungroup()
+
+policy_slope_wide <- policy_monthly_slope %>%
+  dplyr::select(date, policy_label, slope) %>%
+  pivot_wider(
+    names_from  = policy_label,
+    values_from = slope,
+    names_glue  = "timeSince_{policy_label}",
+    values_fill = 0L
+  )
+
+## 5B. Join slope columns into monthly aggregated data --------------------
+
+records_time_agg <- records_time_agg %>%
+  left_join(policy_slope_wide, by = "date") %>%
+  mutate(across(starts_with("timeSince_"), ~ replace_na(., 0L)))
+
+
+```
+
+
+## Step 3: pre-analysis check 
+```{r}
+
+
+mean(records_time_agg$ir1000_scaled ) 
+var(records_time_agg$ir1000_scaled ) 
+
+# var >> mean -- use negative binomial ITS (for count/integer)
+
+```
+
+
+## Step 4: rerun the model with scaled data 
+```{r}
+
+## 1) Fit NB ITS model with spline of time_point
+
+records_time_agg$year <- as.integer(records_time_agg$year )
+annual_ir_scaled$year <- as.integer(annual_ir_scaled$year )
+
+records_time_agg <- records_time_agg %>%
+  arrange(date) %>%
+  mutate(
+    year2 = lubridate::year(date)
+  ) %>%
+  left_join(
+    annual_ir_scaled %>%
+      dplyr::select(year, weight),
+    by = c("year2" = "year")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight,
+    lower95_scaled = lower95_1000 * weight,
+    upper95_scaled = upper95_1000 * weight
+  )
+  
+
+# crude
+nb_its_crude <- glm.nb(
+ ir1000 ~ time_point +
+   policy_D + timeSince_policy_D +
+  policy_E + timeSince_policy_E +
+  policy_F + timeSince_policy_F +
+  policy_G + timeSince_policy_G 
+  ,data = records_time_agg) 
+
+summary(nb_its_crude)
+
+# spline
+m_nb_spline <- glm.nb(
+  ir1000_scaled ~
+    policy_D + timeSince_policy_D +
+  policy_E + timeSince_policy_E +
+  policy_F + timeSince_policy_F +
+  policy_G + timeSince_policy_G +
+    
+    ## Flexible spline of time for long-term + seasonal patterns
+    ns(time_point, df = 3),
+  
+  data = records_time_agg
+)
+
+summary(m_nb_spline)
+
+```
+
+## Step 5: overall ITS plot reformat
+```{r}
+#---------------------------------------------------------
+# 1) Add fitted values from your NB model
+#---------------------------------------------------------
+
+
+records_time_agg <- records_time_agg %>%
+  arrange(date) %>%
+  mutate(
+    fit_nb = predict(m_nb_spline, type = "response"),
+  ) 
+
+
+
+#---------------------------------------------------------
+# 2) Plot: grey dots + orange fit line + selected policy lines
+#---------------------------------------------------------
+
+p_its <- ggplot(records_time_agg, aes(x = date)) +
+
+  geom_vline(
+    data = policy_time_filtered,
+    aes(xintercept = start_time),
+    linetype = "dashed",
+    linewidth = 0.6,
+    color = "grey30"
+  ) +
+
+  geom_text(
+    data = policy_time_filtered,
+    aes(x = start_time, label = paste0(cut_id)),
+    y = Inf,
+    angle = 90,
+    vjust = -0.5,
+    size = 3
+  ) +
+
+  geom_point(aes(y = ir1000_scaled), alpha = 0.7, color = "grey50") +
+
+  geom_line(aes(y = fit_nb), linewidth = 1, color = "#E34000") +
+
+  scale_x_date(
+    breaks = seq(as.Date("1998-01-01"), as.Date("2023-01-01"), by = "1 year"),
+    labels = function(x) {
+      yr <- as.integer(format(x, "%Y"))
+      ifelse(yr %% 2 == 0, as.character(yr), "")
+    }
+  ) +
+
+  scale_y_continuous(
+    limits = c(0, 15),
+    breaks = seq(0, 15, by = 5)
+  ) +
+
+  labs(
+    x = "Year",
+    y = "Incidence rate (per 1000 PY)"
+  ) +
+
+  theme_minimal() +
+
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 8),
+
+    axis.line = element_line(linewidth = 0.4, colour = "grey30"),
+    axis.ticks = element_line(linewidth = 0.4, colour = "grey30"),
+    axis.ticks.length = unit(0.7, "mm"),
+
+    axis.ticks.x = element_line(),
+    axis.ticks.y = element_line(),
+
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank()
+  )
+
+
+#---------------------------------------------------------
+# 4) Save plot
+#---------------------------------------------------------
+ggsave(
+  paste0(tables_figures, "/formatted/its_withoutABC_spline_scaled.jpeg"),
+  plot   = p_its,
+  width  = 7,
+  height = 5,
+  dpi    = 600
+)
+ggsave(
+  paste0(tables_figures, "/formatted/its_withoutABC_spline_scaled.pdf"),
+  plot   = p_its,
+  width  = 7,
+  height = 5,
+  dpi    = 600
+)
+```
+
+# Section 1.5: update ITS covid
+
+
+## Step 1: import policy and IR
+```{r}
+
+ir_semi_monthly <- records_time_agg_covid %>%
+  dplyr::select(year, month, total_records, total_person_years,
+                ir1000, lower95_1000, upper95_1000, label,date)
+
+# 1. fill in 2023-12-31 for those end time NA
+policy_time$end_time[is.na(policy_time$end_time)] <- "2023-12-31"
+
+
+# 2. convert to date variable
+policy_time$start_time <- as.Date(policy_time$start_time)
+policy_time$end_time <- as.Date(policy_time$end_time)
+
+```
+
+## Step 2: re aggregate the data 
+time since policy replaced interaction term as it in equavalent to the outcome of time*policy
+```{r}
+## 0. Make sure dates are Date class ---------------------------------------
+
+
+policy_time_covid <- policy_time %>%
+  mutate(
+    start_time = as.Date(start_time),
+    end_time   = as.Date(end_time)
+  ) %>%
+  # ---- ONLY CHANGE: keep policies starting in or after 2019 ----
+  filter(start_time >= as.Date("2019-01-01")) %>%
+  arrange(start_time)
+
+
+## 1. Semi-month IR data (COVID) ------------------------------------------
+semi_start <- function(x) {
+  x <- as.Date(x)
+  if_else(day(x) <= 15,
+          make_date(year(x), month(x), 1),
+          make_date(year(x), month(x), 16))
+}
+
+## step to next semi-month start (1st -> 16th; 16th -> 1st next month)
+semi_next <- function(d) {
+  d <- as.Date(d)
+  if_else(day(d) == 1,
+          d + days(15),  # 1st -> 16th
+          make_date(year(d %m+% months(1)), month(d %m+% months(1)), 1)) # 16th -> 1st next month
+}
+
+## sequence of semi-month starts from a to b (inclusive)
+semi_seq <- function(a, b) {
+  a <- as.Date(a); b <- as.Date(b)
+  out <- c(a)
+  if (a == b) return(out)
+  cur <- a
+  while (cur < b) {
+    cur <- semi_next(cur)
+    out <- c(out, cur)
+  }
+  out[out <= b]
+}
+
+## subtract one semi-month from a semi-month start
+semi_prev <- function(d) {
+  d <- as.Date(d)
+  if_else(day(d) == 16,
+          d - days(15),  # 16th -> 1st same month
+          make_date(year(d %m-% months(1)), month(d %m-% months(1)), 16)) # 1st -> 16th prev month
+}
+
+
+
+records_time_agg_covid <- ir_semi_monthly%>%
+  arrange(date)
+
+## 2A. Expand policies into SEMI-MONTHLY rows for 0/1 (use original end_time) ---
+
+policy_semimonth_dummy_covid <- policy_time_covid %>%
+  mutate(
+    start_period = semi_start(start_time),
+    end_period   = semi_start(end_time)
+  ) %>%
+  rowwise() %>%
+  mutate(date = list(semi_seq(start_period, end_period))) %>%
+  unnest(date) %>%
+  ungroup()
+
+## 3A. Create 0/1 wide policy-active matrix (unchanged logic) -------------
+
+policy_wide_covid <- policy_semimonth_dummy_covid %>%
+  mutate(active = 1L) %>%
+  dplyr::select(date, policy_label, active) %>%
+  pivot_wider(
+    names_from  = policy_label,
+    values_from = active,
+    values_fill = 0L
+  )
+
+## 4A. Join 0/1 policy-active to semi-month IR (COVID) --------------------
+
+records_time_agg_covid <- records_time_agg_covid %>%
+  left_join(policy_wide_covid, by = "date") %>%
+  mutate(across(starts_with("policy_"), ~ replace_na(., 0L))) %>%
+  mutate(across(starts_with("gap_"), ~ replace_na(., 0L))) %>%
+  arrange(date)
+
+## 5. Create time index (1, 2, 3, ..., per semi-month) --------------------
+
+records_time_agg_covid <- records_time_agg_covid %>%
+  mutate(time_point = row_number())
+
+## 2B. Prepare policy table for SLOPES (end at next policy start - 1 period)
+
+policy_for_slope_covid <- policy_time_covid %>%
+  arrange(start_time) %>%
+  mutate(
+    next_start   = lead(start_time),
+    start_period = semi_start(start_time),
+    eff_end = semi_start(end_time)
+      
+      
+      #case_when(
+      #!is.na(next_start) ~ semi_prev(semi_start(next_start)),  # next policy start - 1 semi-month
+      #TRUE              ~ semi_start(end_time)
+    #)
+  )
+
+## 3B. Expand into SEMI-MONTHLY rows for slopes (start_period -> eff_end) --
+
+policy_semimonth_slope_covid <- policy_for_slope_covid %>%
+  rowwise() %>%
+  mutate(date = list(semi_seq(start_period, eff_end))) %>%
+  unnest(date) %>%
+  ungroup()
+
+## 4B. Create slope variables (0,1,2,... only while active for slope) -----
+
+policy_semimonth_slope_covid <- policy_semimonth_slope_covid %>%
+  group_by(policy_label) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(slope = row_number() - 1L) %>%
+  ungroup()
+
+policy_slope_wide_covid <- policy_semimonth_slope_covid %>%
+  dplyr::select(date, policy_label, slope) %>%
+  pivot_wider(
+    names_from  = policy_label,
+    values_from = slope,
+    names_glue  = "timeSince_{policy_label}",
+    values_fill = 0L
+  )
+
+## 5B. Join slope columns into semi-month aggregated data (COVID) ---------
+
+records_time_agg_covid <- records_time_agg_covid %>%
+  left_join(policy_slope_wide_covid, by = "date") %>%
+  mutate(across(starts_with("timeSince_"), ~ replace_na(., 0L)))
+
+## 6. create interaction variable (unchanged) -----------------------------
+
+interaction_vars <- c(
+  A = "policy_A",
+  B = "policy_B",
+  C = "policy_C",
+  D = "policy_D",
+  E = "policy_E",
+  `F` = "policy_F",
+  G = "policy_G",
+  gap_FG = "gap_FG"
+
+)
+
+for (new in names(interaction_vars)) {
+  old <- interaction_vars[[new]]
+  if (old %in% names(records_time_agg_covid)) {
+    records_time_agg_covid[[paste0("interaction_", new)]] <-
+      records_time_agg_covid$time_point * records_time_agg_covid[[old]]
+  }
+}
+
+
+
+```
+
+
+### Step 2.1: negative binomial ITS model (COVID)
+```{r}
+
+records_time_agg$year <- as.integer(records_time_agg$year )
+annual_ir_scaled$year <- as.integer(annual_ir_scaled$year )
+
+records_time_agg_covid <- records_time_agg_covid %>%
+  arrange(date) %>%
+  mutate(
+    year2 = lubridate::year(date)
+  ) %>%
+  left_join(
+    annual_ir_scaled %>%
+      dplyr::select(year, weight),
+    by = c("year2" = "year")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight,
+    lower95_scaled = lower95_1000 * weight,
+    upper95_scaled = upper95_1000 * weight
+  )
+
+# 1. fit the model with all policy time 
+
+nb_its_crude_covid <- glm.nb(
+  ir1000_scaled ~ time_point +
+  policy_F + timeSince_policy_F +
+  policy_G + timeSince_policy_G ,
+  data = records_time_agg_covid
+)
+
+summary(nb_its_crude_covid)
+
+
+
+
+
+```
+### Step 2.2: plot
+```{r}
+#---------------------------------------------------------
+# 1) Add fitted values from your NB model
+#---------------------------------------------------------
+records_time_agg_covid <- records_time_agg_covid |>
+  arrange(date) |>
+  mutate(
+    fit_nb = predict(nb_its_crude_covid, type = "response")
+  )
+
+#---------------------------------------------------------
+# 2) Ensure policy_time dates are Date class + keep only E, F, gap EF (COVID)
+#---------------------------------------------------------
+policy_time_filtered_covid <- policy_time_covid |>
+  mutate(
+    start_time = as.Date(start_time),
+    end_time   = as.Date(end_time)
+  ) |>
+  filter(policy_label %in% c("policy_F", "policy_G", "gap_FG")) |>
+  mutate(
+    cut_id = dplyr::row_number()
+  )
+
+#---------------------------------------------------------
+# 3) Plot: grey dots + orange fit line + selected policy lines
+#---------------------------------------------------------
+
+p_covid <- ggplot(records_time_agg_covid, aes(x = date)) +
+  
+  # vertical policy lines for E, F, gap EF
+  geom_vline(
+    data = policy_time_filtered_covid,
+    aes(xintercept = start_time),
+    linetype = "dashed",
+    linewidth = 0.6,
+    color = "grey30"
+  ) +
+  
+  geom_text(
+    data = policy_time_filtered_covid,
+    aes(
+      x = start_time,
+      label = paste0(cut_id)
+    ),
+    y = Inf,
+    angle = 90,
+    vjust = -0.5,
+    size = 3
+  ) +
+  
+  # grey observed dots
+  geom_point(aes(y = ir1000_scaled), alpha = 0.7, color = "grey50") +
+  
+  # fitted NB line (orange)
+  geom_line(aes(y = fit_nb), linewidth = 1, color = "#E34000") +
+  
+  # ---- YEARLY x-axis (same as first plot) ----
+  scale_x_date(
+    breaks = seq(
+      as.Date(format(min(records_time_agg_covid$date), "%Y-01-01")),
+      as.Date(format(max(records_time_agg_covid$date), "%Y-01-01")),
+      by = "1 year"
+    ),
+    date_labels = "%Y"
+  ) +
+  
+  # -------------------------------
+  # FIX Y SCALE TO 0–25
+  # -------------------------------
+  scale_y_continuous(
+    limits = c(0, 15),
+    breaks = seq(0, 15, by = 5)
+  ) +
+  
+  labs(
+    x = "Year",
+    y = "Semi-monthly IR per 1000 PY"
+  ) +
+  
+  theme_minimal() +
+theme(
+  plot.title = element_text(hjust = 0.5, face = "bold"),
+axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size = 8),
+  # add lined axes + ticks
+  axis.line = element_line(linewidth = 0.4, colour = "grey30"),
+  axis.ticks = element_line(linewidth = 0.4, colour = "grey30"),
+  axis.ticks.length = unit(0.7, "mm"),
+
+  # minimal theme removes ticks by default; turn them on
+  axis.ticks.x = element_line(),
+  axis.ticks.y = element_line(),
+
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank()
+)
+
+#---------------------------------------------------------
+# 4) Save
+#---------------------------------------------------------
+ggsave(
+  paste0(tables_figures, "/formatted/its_withoutABC_crude_covid_scaled.jpeg"),
+  plot  = p_covid,
+  width = 5,
+  height = 5,
+  dpi = 600
+)
+
+ggsave(
+  paste0(tables_figures, "/formatted/its_withoutABC_crude_covid_scaled.pdf"),
+  plot  = p_covid,
+  width = 5,
+  height = 5,
+  dpi = 600
+)
+```
+
+### Step 2.3: combine ACF and export (figure S4)
+```{r}
+########################################################
+library(ggplot2)
+library(forecast)   # ggAcf()
+library(patchwork)
+
+# -----------------------------
+# Helper: ACF plot with fixed y-scale
+# -----------------------------
+make_acf_plot <- function(x, title, lag.max = 36) {
+  forecast::ggAcf(x, lag.max = lag.max) +
+    labs(title = title, x = "Lag", y = "ACF") +
+    coord_cartesian(ylim = c(-1, 1)) +   # <<< FIXED Y SCALE
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold")
+    )
+}
+
+# -----------------------------
+# Build 4 ACF plots
+# -----------------------------
+pA <- make_acf_plot(
+  residuals(nb_its_crude, type = "pearson"),
+  "(A) ACF of Pearson residuals: NB ITS crude"
+)
+ggsave(pA, filename =paste0(tables_figures,"/acf_4panel_a.jpeg"), width = 12, height = 8, dpi = 600)
+
+pB <- make_acf_plot(
+  residuals(m_nb_spline, type = "pearson"),
+  "(B) ACF of Pearson residuals: NB ITS + spline"
+)
+pB
+ggsave(
+  filename = paste0(tables_figures, "/acf_4panel_b.jpeg"),
+  plot = pB,
+  width = 12,
+  height = 8,
+  dpi = 600
+)
+
+pC <- make_acf_plot(
+  residuals(nb_its_crude_covid, type = "pearson"),
+  "(C) ACF of Pearson residuals: NB ITS crude (COVID)"
+)
+pC
+pD <- make_acf_plot(
+  residuals(m_nb_spline_covid, type = "pearson"),
+  "(D) ACF of Pearson residuals: NB ITS + spline (COVID)"
+)
+pD
+# -----------------------------
+# Patch into 2x2 grid
+# -----------------------------
+library(patchwork)
+
+p_ABC <- (pA | pB) /
+            (pC | plot_spacer())
+
+ggsave(
+  filename = file.path(tables_figures, "formatted", "Figure S4. ACF and partial ACF for ITS analysis.jpeg"),
+  plot = p_ABC,
+  width = 12,
+  height = 8,
+  dpi = 600
+)
+
+
+```
+
+
+
+### Step 2.4: create table 
+```{r}
+extract_nb_its_irr <- function(model,
+                              keep = c("policy", "policy_slope"),
+                              include_time_point = FALSE,
+                              ci_type = c("wald", "profile"),
+                              model_name = NULL) {
+
+  ci_type <- match.arg(ci_type)
+  if (is.null(model_name)) model_name <- deparse(substitute(model))
+
+  est <- stats::coef(model)
+
+  # --- CIs on beta scale ---
+  if (ci_type == "wald") {
+    se <- sqrt(diag(stats::vcov(model)))
+    lci_beta <- est - 1.96 * se
+    uci_beta <- est + 1.96 * se
+    p_value  <- 2 * stats::pnorm(abs(est / se), lower.tail = FALSE)
+  } else {
+    ci_beta <- suppressMessages(stats::confint(model))  # profile CI for glm.nb
+    lci_beta <- ci_beta[, 1]
+    uci_beta <- ci_beta[, 2]
+    se <- sqrt(diag(stats::vcov(model)))
+    p_value <- 2 * stats::pnorm(abs(est / se), lower.tail = FALSE)
+  }
+
+  res <- dplyr::tibble(
+    model = model_name,
+    term  = names(est),
+    beta  = unname(est),
+    lci_beta = unname(lci_beta),
+    uci_beta = unname(uci_beta),
+    IRR     = exp(beta),
+    lci_IRR = exp(lci_beta),
+    uci_IRR = exp(uci_beta),
+    p_value = unname(p_value)
+  )
+
+  # --- decide which terms to keep (based on term text; robust to ordering) ---
+  keep_idx <- rep(FALSE, nrow(res))
+
+  if ("policy" %in% keep) {
+    keep_idx <- keep_idx | grepl("^policy_[DEFG]$", res$term)
+  }
+  if ("policy_slope" %in% keep) {
+    keep_idx <- keep_idx | grepl("^(timeSince_policy_[DEFG])$", res$term)
+  }
+  if (include_time_point) {
+    keep_idx <- keep_idx | (res$term == "time_point")
+  }
+
+res <- res |>
+  dplyr::filter(keep_idx) |>
+  dplyr::mutate(
+    effect_type = dplyr::case_when(
+      term == "time_point" ~ "Baseline trend (per time unit)",
+      grepl("^policy_[DEFG]$", term)  ~ "Level change",
+        grepl("^timeSince_policy_[DEFG]$", term) ~ "Slope change",
+      TRUE ~ "Other"
+    )
+  ,
+      policy = dplyr::case_when(
+        grepl("policy_D", term) ~ "policy_D",
+        grepl("policy_E", term) ~ "policy_E",
+        grepl("policy_F", term) ~ "policy_F",
+        grepl("policy_G", term) ~ "policy_G",
+        term == "time_point"    ~ "time_point",
+        TRUE ~ term
+      ),
+      IRR_CI = sprintf("%.2f (%.2f–%.2f)", IRR, lci_IRR, uci_IRR)
+    ) |>
+    dplyr::select(model, policy, effect_type, term, beta, IRR, lci_IRR, uci_IRR, IRR_CI, p_value)
+
+  res
+}
+
+# crude
+res_crude_alltime <- extract_nb_its_irr(nb_its_crude, ci_type = "wald", model_name = "All-time crude")
+
+# spline/seasonality adjusted
+res_spline_alltime <- extract_nb_its_irr(m_nb_spline, ci_type = "wald", model_name = "All-time + spline")
+# crude
+res_crude_covid <- extract_nb_its_irr(nb_its_crude_covid, ci_type = "wald", model_name = "COVID crude")
+
+
+its_combined <- dplyr::bind_rows(res_crude_alltime,  res_spline_alltime,
+                                 res_crude_covid)
+
+write_xlsx(its_combined,paste0(tables_figures,"/its_results_v6.xlsx") )
+```
+
+####add yearly IRR and CI
+```{r}
+extract_nb_its_irr <- function(model,
+                              keep = c("policy", "policy_slope", "gap", "gap_slope"),
+                              include_time_point = FALSE,
+                              ci_type = c("wald", "profile"),
+                              model_name = NULL) {
+
+  ci_type <- match.arg(ci_type)
+  if (is.null(model_name)) model_name <- deparse(substitute(model))
+
+  est <- stats::coef(model)
+  se  <- sqrt(diag(stats::vcov(model)))
+
+  # --- CIs on beta scale ---
+  if (ci_type == "wald") {
+    lci_beta <- est - 1.96 * se
+    uci_beta <- est + 1.96 * se
+    p_value  <- 2 * stats::pnorm(abs(est / se), lower.tail = FALSE)
+  } else {
+    ci_beta <- suppressMessages(stats::confint(model))  # profile CI for glm.nb
+    lci_beta <- ci_beta[, 1]
+    uci_beta <- ci_beta[, 2]
+    p_value  <- 2 * stats::pnorm(abs(est / se), lower.tail = FALSE)
+  }
+
+  res <- dplyr::tibble(
+    model    = model_name,
+    term     = names(est),
+    beta     = unname(est),
+    se       = unname(se),
+    lci_beta = unname(lci_beta),
+    uci_beta = unname(uci_beta),
+    IRR      = exp(beta),
+    lci_IRR  = exp(lci_beta),
+    uci_IRR  = exp(uci_beta),
+    p_value  = unname(p_value)
+  )
+
+  # --- decide which terms to keep (based on term text; robust to ordering) ---
+  keep_idx <- rep(FALSE, nrow(res))
+
+  if ("policy" %in% keep) {
+    keep_idx <- keep_idx | grepl("^policy_[DEFG]$", res$term)
+  }
+  if ("policy_slope" %in% keep) {
+    keep_idx <- keep_idx | grepl("^(timeSince_policy_[DEFG])$", res$term)
+  }
+  if (include_time_point) {
+    keep_idx <- keep_idx | (res$term == "time_point")
+  }
+
+  res <- res |>
+    dplyr::filter(keep_idx) |>
+    dplyr::mutate(
+      effect_type = dplyr::case_when(
+        term == "time_point" ~ "Baseline trend (per time unit)",
+        grepl("^policy_[DEFG]$", term)  ~ "Level change",
+          grepl("^timeSince_policy_[DEFG]$", term) ~ "Slope change",
+        TRUE ~ "Other"
+      ),
+      policy = dplyr::case_when(
+        grepl("policy_D", term) ~ "policy_D",
+        grepl("policy_E", term) ~ "policy_E",
+        grepl("policy_F", term) ~ "policy_F",
+        grepl("policy_G", term) ~ "policy_G",
+        term == "time_point"    ~ "time_point",
+        TRUE ~ term
+      ),
+      IRR_CI = sprintf("%.2f (%.2f–%.2f)", IRR, lci_IRR, uci_IRR),
+
+      # ---- annualise only trend / slope terms using beta and SE first ----
+      year_beta = dplyr::case_when(
+        effect_type %in% c("Baseline trend (per time unit)", "Slope change") ~ beta * 12,
+        TRUE ~ NA_real_
+      ),
+      year_se = dplyr::case_when(
+        effect_type %in% c("Baseline trend (per time unit)", "Slope change") ~ se * 12,
+        TRUE ~ NA_real_
+      ),
+
+      year_lci_beta = dplyr::case_when(
+        effect_type %in% c("Baseline trend (per time unit)", "Slope change") ~ year_beta - 1.96 * year_se,
+        TRUE ~ NA_real_
+      ),
+      year_uci_beta = dplyr::case_when(
+        effect_type %in% c("Baseline trend (per time unit)", "Slope change") ~ year_beta + 1.96 * year_se,
+        TRUE ~ NA_real_
+      ),
+
+      year_IRR = exp(year_beta),
+      year_lci_IRR = exp(year_lci_beta),
+      year_uci_IRR = exp(year_uci_beta),
+
+      yearly_IRR_CI = dplyr::case_when(
+        effect_type %in% c("Baseline trend (per time unit)", "Slope change") ~
+          sprintf("%.2f (%.2f–%.2f)", year_IRR, year_lci_IRR, year_uci_IRR),
+        TRUE ~ NA_character_
+      )
+    ) |>
+    dplyr::select(
+      model, policy, effect_type, term,
+      beta, se, lci_beta, uci_beta,
+      IRR, lci_IRR, uci_IRR, IRR_CI,
+      year_beta, year_se, year_lci_beta, year_uci_beta,
+      year_IRR, year_lci_IRR, year_uci_IRR, yearly_IRR_CI,
+      p_value
+    )
+
+  res
+}
+
+# crude
+res_crude_alltime <- extract_nb_its_irr(
+  nb_its_crude,
+  ci_type = "wald",
+  model_name = "All-time crude"
+)
+
+# spline/seasonality adjusted
+res_spline_alltime <- extract_nb_its_irr(
+  m_nb_spline,
+  ci_type = "wald",
+  model_name = "All-time + spline"
+)
+
+# crude covid
+res_crude_covid <- extract_nb_its_irr(
+  nb_its_crude_covid,
+  ci_type = "wald",
+  model_name = "COVID crude"
+)
+
+its_combined_scaled <- dplyr::bind_rows(
+  res_crude_alltime,
+  res_spline_alltime,
+  res_crude_covid
+)
+res_crude_alltime_scaled_formatted <- res_crude_alltime %>%
+  mutate(
+    `Crude IRR (95% CI) from 1998-2023` = ifelse(
+      effect_type == "Level change" & is.na(yearly_IRR_CI),
+      IRR_CI,
+      yearly_IRR_CI
+    )
+  ) %>%
+  rename(
+    Policy = policy,
+    `Effect type` = effect_type
+  )
+
+res_spline_alltime_scaled_formatted <- res_spline_alltime %>%
+  mutate(
+    `Adjusted IRR (95% CI) from 1998-2023` = ifelse(
+      effect_type == "Level change" & is.na(yearly_IRR_CI),
+      IRR_CI,
+      yearly_IRR_CI
+    )
+  ) %>%
+  rename(
+    Policy = policy,
+    `Effect type` = effect_type
+  )
+
+res_crude_covid_scaled_formatted <- res_crude_covid %>%
+  mutate(
+    `Crude IRR (95% CI) from 2019-2023` = ifelse(
+      effect_type == "Level change" & is.na(yearly_IRR_CI),
+      IRR_CI,
+      yearly_IRR_CI
+    )
+  ) %>%
+  rename(
+    Policy = policy,
+    `Effect type` = effect_type
+  )
+
+its_combined_scaled_formatted <- res_crude_alltime_scaled_formatted %>%
+  left_join(
+    res_spline_alltime_scaled_formatted %>%
+      rename(p_spline = p_value),
+    by = c("Policy", "Effect type")
+  ) %>%
+  left_join(
+    res_crude_covid_scaled_formatted %>%
+      rename(p_covid = p_value),
+    by = c("Policy", "Effect type")
+  ) %>%
+  mutate(
+    `P crude 1998-2023` = case_when(
+      is.na(p_value)    ~ NA_character_,
+      p_value < 0.0001  ~ "<0.0001",
+      p_value < 0.001   ~ sprintf("%.5f", p_value),
+      p_value < 0.01    ~ sprintf("%.4f", p_value),
+      p_value < 0.1     ~ sprintf("%.3f", p_value),
+      TRUE              ~ sprintf("%.2f", p_value)
+    ),
+
+    `P adjusted 1998-2023` = case_when(
+      is.na(p_spline)    ~ NA_character_,
+      p_spline < 0.0001  ~ "<0.0001",
+      p_spline < 0.001   ~ sprintf("%.5f", p_spline),
+      p_spline < 0.01    ~ sprintf("%.4f", p_spline),
+      p_spline < 0.1     ~ sprintf("%.3f", p_spline),
+      TRUE               ~ sprintf("%.2f", p_spline)
+    ),
+
+    `P crude 2019-2023` = case_when(
+      is.na(p_covid)    ~ NA_character_,
+      p_covid < 0.0001  ~ "<0.0001",
+      p_covid < 0.001   ~ sprintf("%.5f", p_covid),
+      p_covid < 0.01    ~ sprintf("%.4f", p_covid),
+      p_covid < 0.1     ~ sprintf("%.3f", p_covid),
+      TRUE              ~ sprintf("%.2f", p_covid)
+    ),
+
+    across(
+      c(
+        `P crude 1998-2023`,
+        `P adjusted 1998-2023`,
+        `P crude 2019-2023`
+      ),
+      ~ gsub("\\.", "·", .x)
+    )
+  ) %>%
+  dplyr::select(
+    Policy,
+    `Effect type`,
+    `Crude IRR (95% CI) from 1998-2023`,
+    `P crude 1998-2023`,
+    `Adjusted IRR (95% CI) from 1998-2023`,
+    `P adjusted 1998-2023`,
+    `Crude IRR (95% CI) from 2019-2023`,
+    `P crude 2019-2023`
+  )
+its_combined_scaled_formatted <- its_combined_scaled_formatted%>%
+  mutate(
+    `Crude IRR (95% CI) from 1998-2023` = gsub("\\.","·",`Crude IRR (95% CI) from 1998-2023`),
+     `Adjusted IRR (95% CI) from 1998-2023` = gsub("\\.","·",`Adjusted IRR (95% CI) from 1998-2023`),    
+                                                `Crude IRR (95% CI) from 2019-2023` = gsub("\\.","·",`Crude IRR (95% CI) from 2019-2023`))
+
+write_xlsx(
+  its_combined_scaled_formatted,
+  paste0(tables_figures, "/formatted/Table S13.xlsx")
+)
+```
+
+
+# Section 1.6: use scaled regional ir for figure
+## 1. prepare the data 
+```{r}
+regional_ir_scaled <-ir_summary_table_scaled%>%
+  filter(variable=="Region")
+```
+
+## Step 2: regional incidence by map
+```{r}
+# 1. Load map
+uk_map <- st_read(
+  "georef-united-kingdom-county-unitary-authority.geojson",
+  quiet = TRUE
+)
+
+# 2. Prepare map names and join IR data
+uk_map <- uk_map %>%
+
+  left_join(
+    regional_ir_scaled,
+    by = c("rgn_name" = "level")
+  )
+
+# Check whether values were matched
+table(is.na(uk_map$`IR per 1000py`))
+
+# 3. Colour palette
+tailwind_cols <- pink_to_red
+
+# 4. Plot
+ir_region_uk_map <- ggplot(uk_map) +
+  geom_sf(
+    aes(fill = `IR per 1000py`),
+    color = "white",
+    linewidth = 0.2
+  ) +
+  scale_fill_gradientn(
+    colours = tailwind_cols,
+    na.value = "grey90"
+  ) +
+  labs(
+    fill = "IR (per 1000 PY)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  ) +
+  coord_sf(
+    xlim = c(-6.5, 2),
+    ylim = c(49.5, 56),
+    expand = FALSE
+  )
+
+# 5. Save plot
+ggsave(
+  filename = paste0(
+    tables_figures,
+    "/Figure 1. Regional incidence rates of GP consultation for dental problems in England.pdf"
+  ),
+  plot = ir_region_uk_map,
+  width = 8,
+  height = 6,
+  dpi = 600
+)
+
+# 7. add lable manually and convert to jpeg
+pdf_convert(
+  pdf = paste0(tables_figures, "/Figure 1. Regional incidence rates of GP consultation for dental problems in England.pdf"),
+  format = "jpeg",
+  dpi = 600,
+  filenames = paste0(tables_figures, "/formatted/Figure 1. Regional incidence rates of GP consultation for dental problems .jpeg"
+))
+```
+
+# Section 1.7: heatmap table and heatmap
+## Step 1: combine and calculate weight
+```{r}
+
+#--------------------------------------------------------------------
+# 1. Dental problem category × Region
+#--------------------------------------------------------------------
+
+dcat_region_scaled <- dcat_region %>% 
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_dcat_region_overall,
+    by = c("Dental problem categories", "Region")
+  ) %>%
+  mutate(
+    weight = cases / total_cases,
+    ir1000_scaled = ir1000 * weight,
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 2. Dental problem category × Sex
+#--------------------------------------------------------------------
+
+dcat_sex_scaled <- dcat_sex %>% 
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_dcat_sex_overall,
+    by = c("Dental problem categories", "sex")
+  ) %>%
+  mutate(
+    weight = cases / total_cases,
+    ir1000_scaled = ir1000 * weight,
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 3. Dental problem category × Age band
+#--------------------------------------------------------------------
+
+dcat_age2_scaled <- dcat_age2 %>%
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_age2_dcat_overall,
+    by = c("Dental problem categories", "age_band2")
+ ) %>%
+  mutate(
+        weight = cases / total_cases,
+
+    ir1000_scaled = ir1000 * weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+#--------------------------------------------------------------------
+# 4. Age band × Region
+#--------------------------------------------------------------------
+
+age2_rgn_scaled <- age2_rgn %>% 
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_ab2_rgn_overall,
+    by = c(
+      "Region" = "region",
+      "age_band2"
+    )
+  ) %>%
+  mutate(
+    weight = cases / total_cases,
+    ir1000_scaled = ir1000 * weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 5. Age band × Sex
+#--------------------------------------------------------------------
+
+age2_sex_scaled <- ir_age_gender_scaled 
+
+
+#--------------------------------------------------------------------
+# 6. Region × Sex
+#--------------------------------------------------------------------
+
+region_sex_scaled <- region_sex %>% 
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_region_sex_overall,
+    by = c(
+      "Region" = "region",
+      "Sex" = "gender"
+    )
+  ) %>%
+  mutate(
+    weight = cases / total_cases,
+    ir1000_scaled = ir1000 * weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#====================================================================
+# Ethnicity combinations
+
+#====================================================================
+
+
+#--------------------------------------------------------------------
+# 7. Dental problem category × Ethnicity
+
+#--------------------------------------------------------------------
+
+dcat_eth_scaled <- dcat_eth %>%
+   rename(cases = total_cases) %>%
+ 
+  left_join(
+    ir_dcat_overall,
+    by = c("Dental problem categories" = "level")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight,
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 8. Region × Ethnicity
+
+#--------------------------------------------------------------------
+
+eth_region_scaled <- eth_region %>%
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_region_overall,
+    by = c("Region" = "level")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 9. Sex × Ethnicity
+
+#--------------------------------------------------------------------
+
+eth_sex_scaled <- eth_sex %>%
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_gender_overall,
+    by = c("Sex" = "level")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 10. Age band × Ethnicity
+
+#--------------------------------------------------------------------
+
+age2_eth_scaled <- age2_eth %>%
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_age_overall,
+    by = c("age_band2" = "level")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#====================================================================
+# IMD combinations
+#====================================================================
+
+
+#--------------------------------------------------------------------
+# 11. Dental problem category × IMD
+#--------------------------------------------------------------------
+
+dcat_imd_scaled <- dcat_imd %>%
+    rename(cases = total_cases) %>%
+
+  left_join(
+    ir_dcat_overall,
+    by = c("Dental problem categories" = "level")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight,
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 12. Region × IMD
+#--------------------------------------------------------------------
+
+imd_region_scaled <- imd_region %>%
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_region_overall,
+    by = c("Region" = "level")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 13. Sex × IMD
+#--------------------------------------------------------------------
+
+imd_sex_scaled <- imd_sex %>%
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_gender_overall,
+    by = c("Sex" = "level")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 14. Age band × IMD
+
+#--------------------------------------------------------------------
+
+age2_imd_scaled <- age2_imd %>%
+  rename(cases = total_cases) %>%
+  left_join(
+    ir_age_overall,
+    by = c("age_band2" = "level")
+  ) %>%
+  mutate(
+    ir1000_scaled = ir1000 * weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * weight,
+    upper95_scaled = upper95 * weight
+  )
+
+
+#--------------------------------------------------------------------
+# 15. Ethnicity × IMD
+#--------------------------------------------------------------------
+
+eth_imd_scaled <- eth_imd %>%
+  rename(cases = total_cases) %>%
+  mutate(
+    ir1000_scaled = ir1000 * overall_weight
+  ) %>%
+  rowwise() %>%
+  mutate(
+    tmp = list(
+      epi.conf(
+        cbind(cases, total_person_year),
+        ctype = "inc.rate",
+        method = "exact"
+      ) * 1000
+    ),
+    lower95 = tmp$lower,
+    upper95 = tmp$upper
+  ) %>%
+  dplyr::select(-tmp) %>%
+  ungroup() %>%
+  mutate(
+    lower95_scaled = lower95 * overall_weight,
+    upper95_scaled = upper95 * overall_weight
+  )
+```
+
+## Step 2: make heatmap
+```{r}
+############################################################
+## SCALED TRIANGLE HEATMAP
+############################################################
+
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(scales)
+library(cowplot)
+library(grid)
+library(gtable)
+
+############################
+# 0) Helpers
+############################
+
+ETH_LEVELS <- c(
+  "White",
+  "Asian",
+  "Black",
+  "Mixed or Multiple",
+  "Other",
+  "Not specified"
+)
+
+short_eth <- function(x) {
+  x %>%
+    str_replace("^Black, Black British, Caribbean or African$", "Black") %>%
+    str_replace("^Mixed or multiple ethnic groups$", "Mixed or Multiple") %>%
+    str_replace("^Mixed ethnicity$", "Mixed or Multiple") %>%
+    str_replace("^Ethnicity not specified$", "Not specified") %>%
+    str_replace("^Not specified$", "Not specified") %>%
+    str_replace("^Other ethnic group$", "Other") %>%
+    str_replace("^Other ethnicity$", "Other") %>%
+    str_replace("^Asian or Asian British$", "Asian")
+}
+
+as_eth_factor <- function(x) {
+  factor(
+    short_eth(as.character(x)),
+    levels = ETH_LEVELS
+  )
+}
+
+PAD_WIDTH <- 22
+
+pad_lab <- function(x) {
+  str_pad(
+    as.character(x),
+    width = PAD_WIDTH,
+    side = "right"
+  )
+}
+
+label_plot <- function(
+  txt,
+  size = 14,
+  face = "bold",
+  hjust = 0.5,
+  vjust = 0.5,
+  angle = 0,
+  x = 0,
+  y = 0,
+  mar = margin(0, 0, 0, 0, unit = "pt")
+) {
+
+  ggplot() +
+    annotate(
+      "text",
+      x = x,
+      y = y,
+      label = txt,
+      fontface = face,
+      hjust = hjust,
+      vjust = vjust,
+      angle = angle,
+      size = size / ggplot2::.pt
+    ) +
+    theme_void() +
+    theme(
+      plot.margin = mar,
+      panel.background = element_rect(
+        fill = "transparent",
+        colour = NA
+      ),
+      plot.background = element_rect(
+        fill = "transparent",
+        colour = NA
+      )
+    ) +
+    xlim(-1, 1) +
+    ylim(-1, 1) +
+    coord_cartesian(clip = "off")
+}
+
+blank_plot <- function() {
+  ggplot() +
+    theme_void() +
+    theme(
+      plot.margin = margin(0, 0, 0, 0, unit = "pt")
+    )
+}
+
+spacer_plot <- function() {
+  ggplot() +
+    theme_void() +
+    theme(
+      plot.margin = margin(0, 0, 0, 0, unit = "pt")
+    )
+}
+
+
+############################
+# Tile plot
+############################
+
+tile_plot <- function(
+  df,
+  xvar,
+  yvar,
+  show_x = FALSE,
+  show_y = FALSE,
+  fill_limits = NULL
+) {
+
+  x_top_text <- if (show_x) {
+
+    element_text(
+      angle = 45,
+      hjust = 0,
+      vjust = 0,
+      size = 12,
+      margin = margin(b = 2, unit = "pt")
+    )
+
+  } else {
+
+    element_blank()
+  }
+
+  y_text <- if (show_y) {
+
+    element_text(
+      size = 12,
+      margin = margin(r = 2, unit = "pt")
+    )
+
+  } else {
+
+    element_blank()
+  }
+
+  ggplot(
+    df,
+    aes(
+      x = {{ xvar }},
+      y = {{ yvar }},
+      fill = ir1000_scaled
+    )
+  ) +
+    geom_tile(color = NA) +
+    geom_text(
+      aes(
+        label = sprintf(
+          "%.2f",
+          ir1000_scaled
+        )
+      ),
+      size = 3.7,
+      na.rm = TRUE
+    ) +
+    scale_x_discrete(
+      position = "top",
+      expand = c(0, 0)
+    ) +
+    scale_y_discrete(
+      expand = c(0, 0)
+    ) +
+    scale_fill_gradientn(
+      colours = tailwind_cols,
+      limits = fill_limits,
+      oob = scales::squish,
+      name = "Scaled IR per 1,000 PY"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid = element_blank(),
+      axis.title = element_blank(),
+      axis.ticks = element_blank(),
+
+      axis.text.x.top = x_top_text,
+      axis.text.x.bottom = element_blank(),
+      axis.text.y = y_text,
+
+      legend.position = "none",
+
+      panel.background = element_rect(
+        fill = "transparent",
+        colour = NA
+      ),
+
+      plot.background = element_rect(
+        fill = "transparent",
+        colour = NA
+      ),
+
+      plot.margin = margin(
+        0, 0, 0, 0,
+        unit = "pt"
+      ),
+
+      panel.spacing = unit(
+        0,
+        "pt"
+      )
+    )
+}
+
+
+align_heatmap_column <- function(
+  heatmaps,
+  rel_heights
+) {
+
+  aligned <- cowplot::align_plots(
+    plotlist = heatmaps,
+    align = "v",
+    axis = "lr"
+  )
+
+  ROW_GAP <- 0.10
+
+  plotlist2 <- list()
+  rel2 <- c()
+
+  for (i in seq_along(aligned)) {
+
+    plotlist2 <- c(
+      plotlist2,
+      list(aligned[[i]])
+    )
+
+    rel2 <- c(
+      rel2,
+      rel_heights[i]
+    )
+
+    if (i < length(aligned)) {
+
+      plotlist2 <- c(
+        plotlist2,
+        list(spacer_plot())
+      )
+
+      rel2 <- c(
+        rel2,
+        ROW_GAP
+      )
+    }
+  }
+
+  cowplot::plot_grid(
+    plotlist = plotlist2,
+    ncol = 1,
+    rel_heights = rel2,
+    align = "v",
+    axis = "lr",
+    greedy = TRUE
+  )
+}
+
+
+make_column <- function(
+  header_plot,
+  heatmaps,
+  rel_heights,
+  header_height = 0.45
+) {
+
+  hm_col <- align_heatmap_column(
+    heatmaps,
+    rel_heights
+  )
+
+  cowplot::plot_grid(
+    header_plot,
+    hm_col,
+    ncol = 1,
+    rel_heights = c(
+      header_height,
+      sum(rel_heights)
+    ),
+    align = "v",
+    axis = "lr",
+    greedy = TRUE
+  )
+}
+
+
+equalise_axis_top_height <- function(plots) {
+
+  grobs <- lapply(
+    plots,
+    ggplotGrob
+  )
+
+  axis_rows_list <- lapply(
+    grobs,
+    function(g) {
+      unique(
+        g$layout$t[
+          g$layout$name %in% c(
+            "axis-t",
+            "xlab-t"
+          )
+        ]
+      )
+    }
+  )
+
+  axis_rows <- axis_rows_list[[1]]
+
+  max_heights <- grobs[[1]]$heights[
+    axis_rows
+  ]
+
+  if (length(grobs) > 1) {
+
+    for (i in 2:length(grobs)) {
+
+      max_heights <- grid::unit.pmax(
+        max_heights,
+        grobs[[i]]$heights[
+          axis_rows
+        ]
+      )
+    }
+  }
+
+  grobs <- lapply(
+    grobs,
+    function(g) {
+
+      g$heights[
+        axis_rows
+      ] <- max_heights
+
+      g
+    }
+  )
+
+  grobs
+}
+
+
+############################
+# 1) Prepare SCALED tables
+############################
+
+
+#----------------------------
+# DCAT × IMD
+#----------------------------
+
+dcat_imd_plot <- dcat_imd_scaled %>%
+  mutate(
+    dcat = factor(
+      `Dental problem categories`,
+      levels = sort(
+        unique(
+          `Dental problem categories`
+        )
+      )
+    ),
+
+    IMD_raw = as.character(imd),
+
+    IMD = case_when(
+      IMD_raw == "1" ~ "1 (Least Deprived)",
+      IMD_raw == "2" ~ "2",
+      IMD_raw == "3" ~ "3",
+      IMD_raw == "4" ~ "4",
+      IMD_raw == "5" ~ "5 (Most Deprived)",
+      TRUE ~ "Unknown"
+    ),
+
+    IMD = factor(
+      IMD,
+      levels = c(
+        "1 (Least Deprived)",
+        "2",
+        "3",
+        "4",
+        "5 (Most Deprived)",
+        "Unknown"
+      )
+    ),
+
+    IMD_lab = factor(
+      pad_lab(IMD),
+      levels = pad_lab(
+        levels(IMD)
+      )
+    )
+  ) %>%
+  filter(IMD != "Unknown")
+
+
+#----------------------------
+# DCAT × Ethnicity
+#----------------------------
+
+dcat_eth_plot <- dcat_eth_scaled %>%
+  mutate(
+    dcat = factor(
+      `Dental problem categories`,
+      levels = sort(
+        unique(
+          `Dental problem categories`
+        )
+      )
+    ),
+
+    Ethnicity = as_eth_factor(
+      Ethnicity
+    ),
+
+    Eth_lab = factor(
+      pad_lab(Ethnicity),
+      levels = pad_lab(
+        levels(Ethnicity)
+      )
+    )
+  ) %>%
+  filter(
+    Ethnicity != "Not specified"
+  )
+
+
+#----------------------------
+# DCAT × Region
+#----------------------------
+
+dcat_region_plot <- dcat_region_scaled %>%
+  mutate(
+    dcat = factor(
+      `Dental problem categories`,
+      levels = sort(
+        unique(
+          `Dental problem categories`
+        )
+      )
+    ),
+
+    Region = factor(
+      Region,
+      levels = sort(
+        unique(
+          as.character(Region)
+        )
+      )
+    ),
+
+    Rgn_lab = factor(
+      pad_lab(Region),
+      levels = pad_lab(
+        levels(Region)
+      )
+    )
+  )
+
+
+#----------------------------
+# DCAT × Sex
+#----------------------------
+
+dcat_sex_plot <- dcat_sex_scaled %>%
+  mutate(
+    dcat = factor(
+      `Dental problem categories`,
+      levels = sort(
+        unique(
+          `Dental problem categories`
+        )
+      )
+    ),
+
+    Sex = factor(
+      sex,
+      levels = sort(
+        unique(
+          as.character(sex)
+        )
+      )
+    ),
+
+    Sex_lab = factor(
+      pad_lab(Sex),
+      levels = pad_lab(
+        levels(Sex)
+      )
+    )
+  )
+
+
+#----------------------------
+# DCAT × Age
+#----------------------------
+
+dcat_age2_plot <- dcat_age2_scaled %>%
+  mutate(
+    dcat = factor(
+      `Dental problem categories`,
+      levels = sort(
+        unique(
+          `Dental problem categories`
+        )
+      )
+    ),
+
+    Age2_raw = as.character(
+      `Age group`
+    ),
+
+    Age2 = factor(
+      Age2_raw,
+      levels = c(
+        "0-4",
+        "5-9",
+        "10-14",
+        "15-19",
+        "20-24",
+        "25-29",
+        "30-34",
+        "35-39",
+        "40-44",
+        "45-49",
+        "50-54",
+        "55-59",
+        "60-64",
+        "65-69",
+        "70-74",
+        "75-79",
+        "80-84",
+        "85-89",
+        "90+"
+      )
+    ),
+
+    Age2_lab = factor(
+      pad_lab(Age2),
+      levels = pad_lab(
+        levels(Age2)
+      )
+    )
+  )
+
+
+############################
+# Non-DCAT tables
+############################
+
+
+#----------------------------
+# Ethnicity × IMD
+#----------------------------
+
+eth_imd_plot <- eth_imd_scaled %>%
+  mutate(
+    Ethnicity = as_eth_factor(
+      Ethnicity
+    ),
+
+    IMD = factor(
+      as.character(IMD),
+      levels = sort(
+        unique(
+          as.character(IMD)
+        )
+      )
+    )
+  ) %>%
+  filter(
+    Ethnicity != "Not specified"
+  ) %>%
+  filter(
+    IMD != "Unknown"
+  )
+
+
+#----------------------------
+# Ethnicity × Region
+#----------------------------
+
+eth_region_plot <- eth_region_scaled %>%
+  mutate(
+    Ethnicity = as_eth_factor(
+      Ethnicity
+    ),
+
+    Region = factor(
+      Region,
+      levels = sort(
+        unique(
+          as.character(Region)
+        )
+      )
+    )
+  ) %>%
+  filter(
+    Ethnicity != "Not specified"
+  )
+
+
+#----------------------------
+# Ethnicity × Sex
+#----------------------------
+
+eth_sex_plot <- eth_sex_scaled %>%
+  mutate(
+    Ethnicity = as_eth_factor(
+      Ethnicity
+    ),
+
+    Sex = factor(
+      Sex,
+      levels = sort(
+        unique(
+          as.character(Sex)
+        )
+      )
+    )
+  ) %>%
+  filter(
+    Ethnicity != "Not specified"
+  )
+
+
+#----------------------------
+# IMD × Region
+#----------------------------
+
+imd_region_plot <- imd_region_scaled %>%
+  mutate(
+    IMD = factor(
+      as.character(IMD),
+      levels = sort(
+        unique(
+          as.character(IMD)
+        )
+      )
+    ),
+
+    Region = factor(
+      Region,
+      levels = sort(
+        unique(
+          as.character(Region)
+        )
+      )
+    )
+  ) %>%
+  filter(
+    IMD != "Unknown"
+  )
+
+
+#----------------------------
+# IMD × Sex
+#----------------------------
+
+imd_sex_plot <- imd_sex_scaled %>%
+  mutate(
+    IMD = factor(
+      as.character(IMD),
+      levels = sort(
+        unique(
+          as.character(IMD)
+        )
+      )
+    ),
+
+    Sex = factor(
+      Sex,
+      levels = sort(
+        unique(
+          as.character(Sex)
+        )
+      )
+    )
+  ) %>%
+  filter(
+    IMD != "Unknown"
+  )
+
+
+#----------------------------
+# Region × Sex
+#----------------------------
+
+region_sex_plot <- region_sex_scaled %>%
+  mutate(
+    Region = factor(
+      Region,
+      levels = sort(
+        unique(
+          as.character(Region)
+        )
+      )
+    ),
+
+    Sex = factor(
+      Sex,
+      levels = sort(
+        unique(
+          as.character(Sex)
+        )
+      )
+    )
+  )
+
+
+############################
+# Age combinations
+############################
+
+
+#----------------------------
+# Age × Sex
+#----------------------------
+
+age2_sex_plot <- age2_sex_scaled %>%
+  mutate(
+    Age2 = factor(
+      as.character(age_band2),
+      levels = c(
+        "0-4",
+        "5-9",
+        "10-14",
+        "15-19",
+        "20-24",
+        "25-29",
+        "30-34",
+        "35-39",
+        "40-44",
+        "45-49",
+        "50-54",
+        "55-59",
+        "60-64",
+        "65-69",
+        "70-74",
+        "75-79",
+        "80-84",
+        "85-89",
+        "90+"
+      )
+    ),
+
+    Sex = factor(
+      gender,
+      levels = sort(
+        unique(
+          as.character(gender)
+        )
+      )
+    )
+  )
+
+
+#----------------------------
+# Age × Region
+#----------------------------
+
+age2_rgn_plot <- age2_rgn_scaled %>%
+  mutate(
+    Age2 = factor(
+      as.character(age_band2),
+      levels = c(
+        "0-4",
+        "5-9",
+        "10-14",
+        "15-19",
+        "20-24",
+        "25-29",
+        "30-34",
+        "35-39",
+        "40-44",
+        "45-49",
+        "50-54",
+        "55-59",
+        "60-64",
+        "65-69",
+        "70-74",
+        "75-79",
+        "80-84",
+        "85-89",
+        "90+"
+      )
+    ),
+
+    Region = factor(
+      Region,
+      levels = sort(
+        unique(
+          as.character(Region)
+        )
+      )
+    )
+  )
+
+
+#----------------------------
+# Age × Ethnicity
+#----------------------------
+
+age2_eth_plot <- age2_eth_scaled %>%
+  mutate(
+    Age2 = factor(
+      as.character(age_band2),
+      levels = c(
+        "0-4",
+        "5-9",
+        "10-14",
+        "15-19",
+        "20-24",
+        "25-29",
+        "30-34",
+        "35-39",
+        "40-44",
+        "45-49",
+        "50-54",
+        "55-59",
+        "60-64",
+        "65-69",
+        "70-74",
+        "75-79",
+        "80-84",
+        "85-89",
+        "90+"
+      )
+    ),
+
+    Ethnicity = as_eth_factor(
+      Ethnicity
+    )
+  ) %>%
+  filter(
+    Ethnicity != "Not specified"
+  )
+
+
+#----------------------------
+# Age × IMD
+#----------------------------
+
+age2_imd_plot <- age2_imd_scaled %>%
+  mutate(
+    Age2 = factor(
+      as.character(age_band2),
+      levels = c(
+        "0-4",
+        "5-9",
+        "10-14",
+        "15-19",
+        "20-24",
+        "25-29",
+        "30-34",
+        "35-39",
+        "40-44",
+        "45-49",
+        "50-54",
+        "55-59",
+        "60-64",
+        "65-69",
+        "70-74",
+        "75-79",
+        "80-84",
+        "85-89",
+        "90+"
+      )
+    ),
+
+    IMD = factor(
+      IMD,
+      levels = c(
+        "1 (Least Deprived)",
+        "2",
+        "3",
+        "4",
+        "5 (Most Deprived)",
+        "Unknown"
+      )
+    )
+  ) %>%
+  filter(
+    IMD != "Unknown"
+  )
+
+
+############################
+# 2) Shared colour limits
+#
+# IMPORTANT:
+# use ir1000_scaled everywhere
+############################
+
+fill_limits <- range(
+  dcat_sex_plot$ir1000_scaled,
+  dcat_region_plot$ir1000_scaled,
+  dcat_eth_plot$ir1000_scaled,
+  dcat_imd_plot$ir1000_scaled,
+  dcat_age2_plot$ir1000_scaled,
+
+  imd_sex_plot$ir1000_scaled,
+  imd_region_plot$ir1000_scaled,
+
+  eth_sex_plot$ir1000_scaled,
+  eth_region_plot$ir1000_scaled,
+  eth_imd_plot$ir1000_scaled,
+
+  region_sex_plot$ir1000_scaled,
+
+  age2_sex_plot$ir1000_scaled,
+  age2_rgn_plot$ir1000_scaled,
+  age2_eth_plot$ir1000_scaled,
+  age2_imd_plot$ir1000_scaled,
+
+  na.rm = TRUE
+)
+
+
+############################
+# 3) Build triangle heatmaps
+############################
+
+
+#----------------------------
+# DCAT column
+#----------------------------
+
+p_dcat_age2 <- tile_plot(
+  dcat_age2_plot,
+  dcat,
+  Age2_lab,
+  show_x = TRUE,
+  show_y = TRUE,
+  fill_limits = fill_limits
+)
+
+p_dcat_rgn <- tile_plot(
+  dcat_region_plot,
+  dcat,
+  Rgn_lab,
+  show_x = FALSE,
+  show_y = TRUE,
+  fill_limits = fill_limits
+)
+
+p_dcat_eth <- tile_plot(
+  dcat_eth_plot,
+  dcat,
+  Eth_lab,
+  show_x = FALSE,
+  show_y = TRUE,
+  fill_limits = fill_limits
+)
+
+p_dcat_imd <- tile_plot(
+  dcat_imd_plot,
+  dcat,
+  IMD_lab,
+  show_x = FALSE,
+  show_y = TRUE,
+  fill_limits = fill_limits
+)
+
+p_dcat_sex <- tile_plot(
+  dcat_sex_plot,
+  dcat,
+  Sex_lab,
+  show_x = FALSE,
+  show_y = TRUE,
+  fill_limits = fill_limits
+)
+
+
+#----------------------------
+# Sex column
+#----------------------------
+
+p_sex_age2 <- tile_plot(
+  age2_sex_plot,
+  Sex,
+  Age2,
+  show_x = TRUE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_sex_rgn <- tile_plot(
+  region_sex_plot,
+  Sex,
+  Region,
+  show_x = FALSE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_sex_eth <- tile_plot(
+  eth_sex_plot,
+  Sex,
+  Ethnicity,
+  show_x = FALSE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_sex_imd <- tile_plot(
+  imd_sex_plot,
+  Sex,
+  IMD,
+  show_x = FALSE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_sex_sex <- blank_plot()
+
+
+#----------------------------
+# IMD column
+#----------------------------
+
+p_imd_age2 <- tile_plot(
+  age2_imd_plot,
+  IMD,
+  Age2,
+  show_x = TRUE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_imd_rgn <- tile_plot(
+  imd_region_plot,
+  IMD,
+  Region,
+  show_x = FALSE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_imd_eth <- tile_plot(
+  eth_imd_plot,
+  IMD,
+  Ethnicity,
+  show_x = FALSE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_imd_imd <- blank_plot()
+p_imd_sex <- blank_plot()
+
+
+#----------------------------
+# Ethnicity column
+#----------------------------
+
+p_eth_age2 <- tile_plot(
+  age2_eth_plot,
+  Ethnicity,
+  Age2,
+  show_x = TRUE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_eth_rgn <- tile_plot(
+  eth_region_plot,
+  Ethnicity,
+  Region,
+  show_x = FALSE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_eth_eth <- blank_plot()
+p_eth_imd <- blank_plot()
+p_eth_sex <- blank_plot()
+
+
+#----------------------------
+# Region column
+#----------------------------
+
+p_rgn_age2 <- tile_plot(
+  age2_rgn_plot,
+  Region,
+  Age2,
+  show_x = TRUE,
+  show_y = FALSE,
+  fill_limits = fill_limits
+)
+
+p_rgn_rgn <- blank_plot()
+p_rgn_eth <- blank_plot()
+p_rgn_imd <- blank_plot()
+p_rgn_sex <- blank_plot()
+
+
+############################
+# Equalise top axes
+############################
+
+top_row_fixed <- equalise_axis_top_height(
+  list(
+    p_dcat_age2,
+    p_sex_age2,
+    p_imd_age2,
+    p_eth_age2,
+    p_rgn_age2
+  )
+)
+
+p_dcat_age2 <- top_row_fixed[[1]]
+p_sex_age2  <- top_row_fixed[[2]]
+p_imd_age2  <- top_row_fixed[[3]]
+p_eth_age2  <- top_row_fixed[[4]]
+p_rgn_age2  <- top_row_fixed[[5]]
+
+
+############################
+# 4) Row heights
+############################
+
+heatmap_row_heights <- c(
+  Age2 = 10.5,
+  Region = 4,
+  Ethnicity = 2.6,
+  IMD = 2.6,
+  Sex = 0.9
+)
+
+
+############################
+# 5) Headers + row labels
+############################
+
+h_row <- label_plot("")
+
+h_dcat <- label_plot(
+  "Dental problem",
+  hjust = 0,
+  mar = margin(
+    0, 0, 0, 25,
+    unit = "pt"
+  )
+)
+
+h_sex <- label_plot("Sex")
+h_imd <- label_plot("IMD")
+h_eth <- label_plot("Ethnicity")
+h_rgn <- label_plot("English region")
+
+
+r_age2 <- label_plot(
+  "Age",
+  face = "bold",
+  angle = 90,
+  x = 0.98,
+  hjust = 1
+)
+
+r_rgn <- label_plot(
+  "English region",
+  face = "bold",
+  angle = 90,
+  x = 0.98,
+  y = 0.6,
+  hjust = 1
+)
+
+r_eth <- label_plot(
+  "Ethnicity",
+  face = "bold",
+  angle = 90,
+  x = 0.98,
+  y = 0.6,
+  hjust = 1
+)
+
+r_imd <- label_plot(
+  "IMD",
+  face = "bold",
+  angle = 90,
+  x = 0.98,
+  y = 0.3,
+  hjust = 1
+)
+
+r_sex <- label_plot(
+  "Sex",
+  face = "bold",
+  angle = 90,
+  x = 0.98,
+  y = 0.5,
+  hjust = 1
+)
+
+
+col_rows <- cowplot::plot_grid(
+  h_row,
+
+  cowplot::plot_grid(
+    r_age2,
+    r_rgn,
+    r_eth,
+    r_imd,
+    r_sex,
+    ncol = 1,
+    rel_heights = heatmap_row_heights
+  ),
+
+  ncol = 1,
+  rel_heights = c(
+    0.45,
+    sum(heatmap_row_heights)
+  ),
+
+  align = "v",
+  axis = "lr",
+  greedy = TRUE
+)
+
+
+############################
+# 6) Build columns
+############################
+
+col_dcat <- make_column(
+  header_plot = h_dcat,
+
+  heatmaps = list(
+    p_dcat_age2,
+    p_dcat_rgn,
+    p_dcat_eth,
+    p_dcat_imd,
+    p_dcat_sex
+  ),
+
+  rel_heights = heatmap_row_heights,
+  header_height = 0.45
+)
+
+
+col_sex <- make_column(
+  header_plot = h_sex,
+
+  heatmaps = list(
+    p_sex_age2,
+    p_sex_rgn,
+    p_sex_eth,
+    p_sex_imd,
+    p_sex_sex
+  ),
+
+  rel_heights = heatmap_row_heights,
+  header_height = 0.45
+)
+
+
+col_imd <- make_column(
+  header_plot = h_imd,
+
+  heatmaps = list(
+    p_imd_age2,
+    p_imd_rgn,
+    p_imd_eth,
+    p_imd_imd,
+    p_imd_sex
+  ),
+
+  rel_heights = heatmap_row_heights,
+  header_height = 0.45
+)
+
+
+col_eth <- make_column(
+  header_plot = h_eth,
+
+  heatmaps = list(
+    p_eth_age2,
+    p_eth_rgn,
+    p_eth_eth,
+    p_eth_imd,
+    p_eth_sex
+  ),
+
+  rel_heights = heatmap_row_heights,
+  header_height = 0.45
+)
+
+
+col_rgn <- make_column(
+  header_plot = h_rgn,
+
+  heatmaps = list(
+    p_rgn_age2,
+    p_rgn_rgn,
+    p_rgn_eth,
+    p_rgn_imd,
+    p_rgn_sex
+  ),
+
+  rel_heights = heatmap_row_heights,
+  header_height = 0.45
+)
+
+
+############################
+# 7) Shared legend
+#
+# IMPORTANT:
+# use ir1000_scaled
+############################
+
+legend_plot <- ggplot(
+  dcat_sex_plot,
+  aes(
+    x = dcat,
+    y = Sex_lab,
+    fill = ir1000_scaled
+  )
+) +
+  geom_tile() +
+  scale_fill_gradientn(
+    colours = tailwind_cols,
+    limits = fill_limits,
+    oob = scales::squish,
+    name = "Scaled IR (per 1000 PY)"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "right",
+
+    legend.title = element_text(
+      face = "bold",
+      size = 13
+    ),
+
+    legend.text = element_text(
+      size = 11
+    ),
+
+    legend.margin = margin(
+      12, 20, 12, 20,
+      unit = "pt"
+    ),
+
+    legend.box.margin = margin(
+      12, 20, 12, 20,
+      unit = "pt"
+    ),
+
+    legend.key.height = unit(
+      22,
+      "pt"
+    ),
+
+    legend.key.width = unit(
+      18,
+      "pt"
+    ),
+
+    plot.margin = margin(
+      26, 55, 26, 22,
+      unit = "pt"
+    )
+  )
+
+
+legend_only <- cowplot::get_legend(
+  legend_plot
+)
+
+
+legend_box <- cowplot::plot_grid(
+  spacer_plot(),
+
+  cowplot::ggdraw(
+    legend_only
+  ),
+
+  ncol = 1,
+  rel_heights = c(
+    0.35,
+    1
+  )
+)
+
+
+############################
+# 8) Combine
+############################
+
+COL_GAP <- 0.005
+
+final_scaled <- cowplot::plot_grid(
+  col_rows,
+
+  spacer_plot(),
+  col_dcat,
+
+  spacer_plot(),
+  col_sex,
+
+  spacer_plot(),
+  col_imd,
+
+  spacer_plot(),
+  col_eth,
+
+  spacer_plot(),
+  col_rgn,
+
+  spacer_plot(),
+  legend_box,
+
+  nrow = 1,
+
+  rel_widths = c(
+    0.10,
+    COL_GAP,
+    0.75,
+    COL_GAP,
+    0.15,
+    0.01,
+    0.40,
+    COL_GAP,
+    0.40,
+    COL_GAP,
+    0.6,
+    COL_GAP,
+    0.20
+  ),
+
+  align = "h",
+  axis = "tb",
+  greedy = TRUE
+)
+
+
+final_scaled
+
+
+############################
+# 9) Save scaled heatmap
+############################
+
+ggsave(
+  filename = paste0(
+    tables_figures,
+    "/formatted/Figure 2. Heatmap of incidence rate by sociodemographic factors.jpeg"
+  ),
+
+  plot = final_scaled,
+
+  width = 21,
+  height = 14,
+  units = "in",
+  dpi = 1200
+)
+
+ggsave(
+  filename = paste0(
+    tables_figures,
+    "/formatted/Figure 2. Heatmap of incidence rate by sociodemographic factors.pdf"
+  ),
+
+  plot = final_scaled,
+
+  width = 21,
+  height = 14,
+  units = "in",
+  dpi = 1200
+)
+```
+
+
+## format heatmap table
+```{r}
+#---------------------------------------------------------
+# 1. Scaled dataframes
+#---------------------------------------------------------
+
+loaded_objs <- c(
+  "dcat_imd_scaled", "dcat_eth_scaled", "dcat_region_scaled", "dcat_sex_scaled",
+  "eth_imd_scaled", "eth_region_scaled", "eth_sex_scaled",
+  "imd_region_scaled", "imd_sex_scaled", "region_sex_scaled",
+  "dcat_age2_scaled", "age2_sex_scaled", "age2_rgn_scaled",
+  "age2_eth_scaled", "age2_imd_scaled"
+)
+
+
+#---------------------------------------------------------
+# 2. Variable mapping
+#---------------------------------------------------------
+
+var_map <- list(
+
+  dcat_imd_scaled =
+    c(var1 = "Dental problem categories", var2 = "IMD"),
+
+  dcat_eth_scaled =
+    c(var1 = "Dental problem categories", var2 = "Ethnicity"),
+
+  dcat_region_scaled =
+    c(var1 = "Dental problem categories", var2 = "Region"),
+
+  dcat_sex_scaled =
+    c(var1 = "Dental problem categories", var2 = "Sex"),
+
+  eth_imd_scaled =
+    c(var1 = "Ethnicity", var2 = "IMD"),
+
+  eth_region_scaled =
+    c(var1 = "Ethnicity", var2 = "Region"),
+
+  eth_sex_scaled =
+    c(var1 = "Ethnicity", var2 = "Sex"),
+
+  imd_region_scaled =
+    c(var1 = "IMD", var2 = "Region"),
+
+  imd_sex_scaled =
+    c(var1 = "IMD", var2 = "Sex"),
+
+  region_sex_scaled =
+    c(var1 = "Region", var2 = "Sex"),
+
+  dcat_age2_scaled =
+    c(var1 = "Dental problem categories", var2 = "Age2"),
+
+  # age2_sex_scaled uses the original variable names
+  age2_sex_scaled =
+    c(var1 = "age_band2", var2 = "gender"),
+
+  age2_rgn_scaled =
+    c(var1 = "Age2", var2 = "Region"),
+
+  age2_eth_scaled =
+    c(var1 = "Age2", var2 = "Ethnicity"),
+
+  age2_imd_scaled =
+    c(var1 = "Age2", var2 = "IMD")
+)
+
+
+#---------------------------------------------------------
+# 3. Prefix levels
+#---------------------------------------------------------
+
+prefix_level <- function(var, level) {
+
+  dplyr::case_when(
+
+    var == "Age2" ~
+      paste("Age", level),
+
+    var == "age_band2" ~
+      paste("Age", level),
+
+    var == "Sex" ~
+      paste("Sex", level),
+
+    var == "gender" ~
+      paste("Sex", level),
+
+    var == "Ethnicity" ~
+      paste("Ethnicity", level),
+
+    var == "IMD" ~
+      paste("IMD", level),
+
+    var == "Region" ~
+      paste("English region", level),
+
+    var == "Dental problem categories" ~
+      paste("Dental problem", level),
+
+    TRUE ~
+      paste(var, level)
+  )
+}
+
+
+#---------------------------------------------------------
+# 4. Standardise scaled IR tables
+#---------------------------------------------------------
+
+standardise_ir_table <- function(df, df_name) {
+
+  this_map <- var_map[[df_name]]
+
+  df %>%
+    dplyr::mutate(
+
+      variable1 = unname(this_map["var1"]),
+      variable2 = unname(this_map["var2"]),
+
+      level1_raw = .data[[unname(this_map["var1"])]],
+      level2_raw = .data[[unname(this_map["var2"])]],
+
+      level1 = prefix_level(
+        variable1,
+        as.character(level1_raw)
+      ),
+
+      level2 = prefix_level(
+        variable2,
+        as.character(level2_raw)
+      ),
+
+      `IR per 1000 PY (95%CI)` = sprintf(
+        "%.2f (%.2f-%.2f)",
+        ir1000_scaled,
+        lower95_scaled,
+        upper95_scaled
+      )
+    ) %>%
+
+    dplyr::select(
+      variable1,
+      level1,
+      variable2,
+      level2,
+      cases,
+      total_person_year,
+      ir1000_scaled,
+      lower95_scaled,
+      upper95_scaled,
+      `IR per 1000 PY (95%CI)`
+    )
+}
+
+
+#---------------------------------------------------------
+# 5. Combine all scaled tables
+#---------------------------------------------------------
+
+combined_ir_tables_scaled <- purrr::map_dfr(
+  loaded_objs,
+  ~ standardise_ir_table(get(.x), .x),
+  .id = "source_df"
+)
+
+
+#---------------------------------------------------------
+# 6. View result
+#---------------------------------------------------------
+
+View(combined_ir_tables_scaled)
+
+
+
+```
+
+## fromat table
+```{r}
+combined_ir_tables_scaled_formatted <- combined_ir_tables_scaled %>%
+  mutate(
+    total_person_year = as.integer(round(total_person_year))
+  ) %>%
+  rename(
+    `Variable 1` = variable1,
+    `Level 1` = level1,
+    `Variable 2` = variable2,
+    `Level 2` = level2,
+    `N events` = cases,
+    `Total person years` = total_person_year
+  ) %>%
+  dplyr::select(
+    `Level 1`,
+    `Level 2`,
+    `N events`,
+    `Total person years`,
+    `IR per 1000 PY (95%CI)`
+  )%>%
+  mutate(
+  `N events` = formatC(`N events`, format = "f", digits = 0, big.mark = ","),
+`Total person years` = formatC(
+  `Total person years`,format = "f", digits = 0,big.mark = ","),
+    `IR per 1000 PY (95%CI)` = gsub("\\.","·",`IR per 1000 PY (95%CI)`)
+)
+
+
+write_xlsx(
+  combined_ir_tables_scaled_formatted,
+  paste0(
+    tables_figures,
+    "/formatted/Table S8. Intersectional IR and confidence interval in heatmap.xlsx"
+  )
+)
+```
+
